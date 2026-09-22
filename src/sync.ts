@@ -23,6 +23,7 @@ export interface SyncReport {
   friendlies: number;
   newlyPlayed: number;
   pendingRegistrations: number;
+  hiddenRosters: number;
   warnings: string[];
 }
 
@@ -32,18 +33,31 @@ export async function syncSeason(env: Env, season: SeasonRow, actor = 'sync'): P
 
   const tournament = await fetchTournament(slug);
   const entrants = await fetchEntrants(slug);
-  const schedule = await fetchSchedule(slug, season.tourplay_phase_id);
+
+  // Pre-season, TourPlay has registrations but no draw. That is a normal state,
+  // not a failure: the entrants are exactly what the organiser wants to see
+  // while signups are open, so import them and carry on without a schedule.
+  let schedule: Awaited<ReturnType<typeof fetchSchedule>> | null = null;
+  try {
+    schedule = await fetchSchedule(slug, season.tourplay_phase_id);
+  } catch (cause) {
+    warnings.push(`No fixtures imported: ${String(cause).replace('Error: ', '')}`);
+  }
 
   // --- divisions (§3.3) ----------------------------------------------------
-  // One TourPlay category per division. Tier comes from the order TourPlay
-  // lists them in, which is the order they were created: Premier first.
-  for (const [index, category] of tournament.categories.entries()) {
+  // One TourPlay category per division. A single unnamed category means the
+  // season is not divided on TourPlay at all, so creating a "Division 1" out
+  // of it would invent structure that does not exist: leave it flat.
+  const modelsDivisions =
+    tournament.categories.length > 1 || tournament.categories.some((c) => c.name.trim() !== '');
+
+  for (const [index, category] of (modelsDivisions ? tournament.categories : []).entries()) {
     await env.DB.prepare(
       `INSERT INTO division (season_id, name, tier, tourplay_category_id)
          VALUES (?, ?, ?, ?)
        ON CONFLICT (season_id, name) DO UPDATE SET tourplay_category_id = excluded.tourplay_category_id`,
     )
-      .bind(season.id, category.name, index + 1, category.id)
+      .bind(season.id, category.name.trim() || `Division ${index + 1}`, index + 1, category.id)
       .run();
   }
   const { results: divisionRows } = await env.DB.prepare(
@@ -61,9 +75,11 @@ export async function syncSeason(env: Env, season: SeasonRow, actor = 'sync'): P
   let coaches = 0;
   let teams = 0;
   let pendingRegistrations = 0;
+  let hiddenRosters = 0;
 
   for (const entrant of entrants) {
     if (!entrant.validated) pendingRegistrations += 1;
+    if (entrant.rosterHidden) hiddenRosters += 1;
 
     await env.DB.prepare(
       `INSERT INTO coach (season_id, tourplay_player_id, display_name, naf_number, naf_verified)
@@ -99,7 +115,7 @@ export async function syncSeason(env: Env, season: SeasonRow, actor = 'sync'): P
   }
 
   // --- rounds --------------------------------------------------------------
-  const totalRounds = Math.max(schedule.totalRounds, season.total_rounds, 0);
+  const totalRounds = Math.max(schedule?.totalRounds ?? 0, season.total_rounds, 0);
   for (let number = 1; number <= totalRounds; number += 1) {
     // Windows live in the ON CONFLICT DO NOTHING gap on purpose: re-syncing a
     // season must never reset a round's dates or status.
@@ -134,7 +150,7 @@ export async function syncSeason(env: Env, season: SeasonRow, actor = 'sync'): P
   let friendlies = 0;
   let newlyPlayed = 0;
 
-  for (const match of schedule.matches) {
+  for (const match of schedule?.matches ?? []) {
     if (!match.matchId) {
       warnings.push(`A round ${match.round} match has no TourPlay match id and was skipped`);
       continue;
@@ -240,7 +256,14 @@ export async function syncSeason(env: Env, season: SeasonRow, actor = 'sync'): P
        last_synced_at = ?, last_sync_error = NULL, updated_at = datetime('now')
      WHERE id = ?`,
   )
-    .bind(tournament.id, schedule.phaseId, totalRounds, tournament.name, nowIso(), season.id)
+    .bind(
+      tournament.id,
+      schedule?.phaseId ?? season.tourplay_phase_id,
+      totalRounds,
+      tournament.name,
+      nowIso(),
+      season.id,
+    )
     .run();
 
   const report: SyncReport = {
@@ -248,11 +271,12 @@ export async function syncSeason(env: Env, season: SeasonRow, actor = 'sync'): P
     coaches,
     teams,
     rounds: totalRounds,
-    divisions: tournament.categories.length,
+    divisions: modelsDivisions ? tournament.categories.length : 0,
     fixtures,
     friendlies,
     newlyPlayed,
     pendingRegistrations,
+    hiddenRosters,
     warnings,
   };
   await audit(env, actor, 'tourplay.sync', season.tourplay_slug, report);

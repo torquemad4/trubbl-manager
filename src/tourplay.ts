@@ -95,9 +95,12 @@ export async function fetchTournament(slug: string): Promise<TourplayTournament>
     slug: raw?.nameNormalized ?? slug,
     categories: (raw?.categories ?? [])
       .filter((c: any) => typeof c?.id === 'number')
-      .map((c: any, index: number) => ({
+      // Keep the name exactly as TourPlay gives it, blank included: an unnamed
+      // single category means the season is not divided, and inventing a name
+      // here would make it look as though it were.
+      .map((c: any) => ({
         id: c.id as number,
-        name: String(c?.name ?? c?.categoryName ?? `Division ${index + 1}`),
+        name: String(c?.name ?? c?.categoryName ?? '').trim(),
       })),
     initDate: raw?.initDate ?? null,
     finishDate: raw?.finishDate ?? null,
@@ -110,9 +113,12 @@ export interface TourplayEntrant {
   coachName: string;
   teamName: string;
   race: string;
+  rosterId: number | null;
   nafNumber: number | null;
   nafVerified: boolean;
   validated: boolean;
+  /** TourPlay hides roster details until the season opens (isHiddenRoster). */
+  rosterHidden: boolean;
 }
 
 /**
@@ -143,16 +149,25 @@ export async function fetchEntrants(slug: string): Promise<TourplayEntrant[]> {
         seen.add(key);
 
         const naf = row?.player?.nafNumber;
+        // An inscription row carries the roster as a nested object, not as
+        // teamName/teamRace at the top level. Until the organiser opens the
+        // season TourPlay returns those blank, leaving only the short name.
+        const roster = row?.roster ?? {};
+        const fullName = typeof roster.teamName === 'string' ? roster.teamName.trim() : '';
+        const shortName = typeof roster.shortTeamName === 'string' ? roster.shortTeamName.trim() : '';
+
         entrants.push({
           playerId: key,
           categoryId,
           coachName: row?.player?.userNameToShow ?? '',
-          teamName: row?.teamName ?? '',
-          race: raceName(row?.teamRace),
+          teamName: fullName || shortName,
+          race: raceName(roster.teamRace),
+          rosterId: typeof roster.id === 'number' ? roster.id : null,
           nafNumber: typeof naf === 'number' && naf > 0 ? naf : null,
           nafVerified: row?.player?.nafVerified === true,
-          // TourPlay marks a registration active once the organiser validates it.
-          validated: row?.active === true || row?.status === 1 || row?.validated === true,
+          // state 1 means the organiser has validated the registration.
+          validated: row?.state === 1,
+          rosterHidden: !fullName,
         });
       }
     }
