@@ -169,8 +169,12 @@ export async function fixtureForCoach(
   return row ? toView(row) : null;
 }
 
+/**
+ * Fixtures still needing action. Inter-divisional friendlies (§3.3.2) are
+ * voluntary extras, so they are never chased and never hold a round open.
+ */
 export function outstanding(fixtures: FixtureView[]): FixtureView[] {
-  return fixtures.filter((f) => f.status === 'unplayed' || f.status === 'scheduled');
+  return fixtures.filter((f) => !f.isFriendly && (f.status === 'unplayed' || f.status === 'scheduled'));
 }
 
 export async function roundWindow(env: Env, round: RoundRow, now = new Date()): Promise<WindowView> {
@@ -186,6 +190,7 @@ export interface DivisionRow {
   tier: number;
   promote_count: number;
   relegate_count: number;
+  chase_channel_id: string;
 }
 
 export async function divisionsFor(env: Env, seasonId: number): Promise<DivisionRow[]> {

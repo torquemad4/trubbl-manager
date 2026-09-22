@@ -109,9 +109,12 @@ function clamp(lines: string[], limit = 1900): string {
   return out.join('\n');
 }
 
-function isAdmin(interaction: Interaction, adminRoleId: string): boolean {
-  if (!adminRoleId) return false;
-  return (interaction.member?.roles ?? []).includes(adminRoleId);
+/** Any one of the configured roles is enough. */
+function isAdmin(interaction: Interaction, adminRoleIds: string): boolean {
+  const allowed = adminRoleIds.split(',').map((id) => id.trim()).filter(Boolean);
+  if (allowed.length === 0) return false;
+  const held = interaction.member?.roles ?? [];
+  return allowed.some((id) => held.includes(id));
 }
 
 function parseWhen(raw: string): string | null {
@@ -152,7 +155,7 @@ export async function handleCommand(env: Env, interaction: Interaction): Promise
     case 'extend':
       return extendCommand(env, season.id, user, options['days'] ?? '', options['reason'] ?? '', map);
     case 'forfeit':
-      if (!isAdmin(interaction, map['discord_admin_role_id'] ?? '')) {
+      if (!isAdmin(interaction, map['discord_admin_role_ids'] ?? '')) {
         return replyJson('Only the Lord Commissioner can rule on an unplayed game.');
       }
       return forfeitCommand(env, user, options, map);

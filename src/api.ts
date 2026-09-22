@@ -6,6 +6,7 @@ import { RULING_LABELS } from './commands.js';
 import { announceOnce, mention } from './discord.js';
 import {
   currentRound,
+  divisionsFor,
   fixtureById,
   fixturesForRound,
   outstanding,
@@ -280,6 +281,23 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
           : `**Extension refused** — ${row.home_team} v ${row.away_team}. The original deadline stands.`,
       );
     }
+    return json({ ok: true });
+  }
+
+  // --- divisions -----------------------------------------------------------
+
+  if (path === '/api/divisions' && method === 'GET') {
+    const season = await activeSeason(env);
+    return json({ divisions: season ? await divisionsFor(env, season.id) : [] });
+  }
+
+  const divisionMatch = /^\/api\/divisions\/(\d+)$/.exec(path);
+  if (divisionMatch && method === 'POST') {
+    const id = Number(divisionMatch[1]);
+    await env.DB.prepare('UPDATE division SET chase_channel_id = ? WHERE id = ?')
+      .bind(String(body.chase_channel_id ?? '').trim(), id)
+      .run();
+    await audit(env, actor, 'division.channel', `division:${id}`, body);
     return json({ ok: true });
   }
 

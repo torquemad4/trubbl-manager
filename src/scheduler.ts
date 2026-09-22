@@ -9,10 +9,12 @@ import { activeSeason, audit, nagDaysFrom, nowIso, settings } from './db.js';
 import { announceOnce, mention } from './discord.js';
 import {
   currentRound,
+  divisionsFor,
   fixturesForRound,
   outstanding,
   roundsFor,
   ruleFixture,
+  type DivisionRow,
   type FixtureView,
   type RoundRow,
 } from './league.js';
@@ -41,6 +43,38 @@ function effectiveDeadline(round: RoundRow, fixture: FixtureView): string | null
 
 function dayStamp(now: Date): string {
   return now.toISOString().slice(0, 10);
+}
+
+/**
+ * Split a chase list by division, so Premier coaches are nagged in the Premier
+ * games-setup channel rather than everyone being nagged everywhere. Anything
+ * with no division falls into one bucket keyed null and goes to the league-wide
+ * channel.
+ */
+function byDivision(fixtures: FixtureView[]): Map<number | null, FixtureView[]> {
+  const groups = new Map<number | null, FixtureView[]>();
+  for (const fixture of fixtures) {
+    const key = fixture.divisionId ?? null;
+    const list = groups.get(key);
+    if (list) list.push(fixture);
+    else groups.set(key, [fixture]);
+  }
+  return groups;
+}
+
+function channelFor(
+  divisionId: number | null,
+  divisions: Map<number, DivisionRow>,
+  fallback: string,
+): string {
+  if (divisionId === null) return fallback;
+  return divisions.get(divisionId)?.chase_channel_id || fallback;
+}
+
+function divisionLabel(divisionId: number | null, divisions: Map<number, DivisionRow>): string {
+  if (divisionId === null) return '';
+  const name = divisions.get(divisionId)?.name;
+  return name ? ` — ${name}` : '';
 }
 
 function describe(fixture: FixtureView): string {
@@ -80,6 +114,8 @@ export async function tick(env: Env, now = new Date()): Promise<TickReport> {
   const closingSoon = Number(map['closing_soon_days'] ?? 3) || 3;
   const autoForfeit = (map['auto_forfeit_on_close'] ?? 'false') === 'true';
 
+  const divisions = new Map((await divisionsFor(env, season.id)).map((d) => [d.id, d]));
+
   for (const round of await roundsFor(env, season.id)) {
     // 2. Open a round whose start date has arrived.
     if (round.status === 'pending' && round.opens_at && Date.parse(round.opens_at) <= now.getTime()) {
@@ -108,21 +144,24 @@ export async function tick(env: Env, now = new Date()): Promise<TickReport> {
     const left = outstanding(fixtures);
     const view = windowState(now, round.opens_at, round.closes_at, null, closingSoon);
 
-    // 3. Nag on the configured days before the deadline.
+    // 3. Nag on the configured days before the deadline, one post per division.
     if (view.daysRemaining !== null && nagDays.includes(view.daysRemaining) && left.length > 0) {
-      const key = `nag:${round.id}:${view.daysRemaining}`;
-      const result = await announceOnce(
-        env,
-        key,
-        'nag',
-        chaseChannel,
-        `**Round ${round.number} — ${view.daysRemaining} day${view.daysRemaining === 1 ? '' : 's'} left.**\n` +
-          `${left.length} game${left.length === 1 ? '' : 's'} still to play:\n` +
-          left.map(describe).join('\n'),
-      );
-      if (!result.skipped) {
-        report.nagged.push(key);
-        await markChased(env, left, view.daysRemaining <= 1 ? 'chased' : 'nudged');
+      for (const [divisionId, group] of byDivision(left)) {
+        const key = `nag:${round.id}:${divisionId ?? 'none'}:${view.daysRemaining}`;
+        const result = await announceOnce(
+          env,
+          key,
+          'nag',
+          channelFor(divisionId, divisions, chaseChannel),
+          `**Round ${round.number}${divisionLabel(divisionId, divisions)} — ` +
+            `${view.daysRemaining} day${view.daysRemaining === 1 ? '' : 's'} left.**\n` +
+            `${group.length} game${group.length === 1 ? '' : 's'} still to play:\n` +
+            group.map(describe).join('\n'),
+        );
+        if (!result.skipped) {
+          report.nagged.push(key);
+          await markChased(env, group, view.daysRemaining <= 1 ? 'chased' : 'nudged');
+        }
       }
     }
 
@@ -134,21 +173,21 @@ export async function tick(env: Env, now = new Date()): Promise<TickReport> {
         return !deadline || Date.parse(deadline) <= now.getTime();
       });
 
-      if (stillOverdue.length > 0) {
-        const key = `overdue:${round.id}:${dayStamp(now)}`;
+      for (const [divisionId, group] of byDivision(stillOverdue)) {
+        const key = `overdue:${round.id}:${divisionId ?? 'none'}:${dayStamp(now)}`;
         const result = await announceOnce(
           env,
           key,
           'overdue',
-          chaseChannel,
-          `**Round ${round.number} is past its deadline.**\n` +
-            `${stillOverdue.length} game${stillOverdue.length === 1 ? '' : 's'} outstanding:\n` +
-            stillOverdue.map(describe).join('\n') +
+          channelFor(divisionId, divisions, chaseChannel),
+          `**Round ${round.number}${divisionLabel(divisionId, divisions)} is past its deadline.**\n` +
+            `${group.length} game${group.length === 1 ? '' : 's'} outstanding:\n` +
+            group.map(describe).join('\n') +
             `\n\nPlay it, or ask for an extension with \`/trubbl extend\`.`,
         );
         if (!result.skipped) {
           report.nagged.push(key);
-          await markChased(env, stillOverdue, 'escalated');
+          await markChased(env, group, 'escalated');
         }
       }
 

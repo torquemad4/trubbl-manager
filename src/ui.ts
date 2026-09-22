@@ -457,7 +457,7 @@ var SETTING_LABELS = {
   announce_channel_id: 'Discord: announcements channel id',
   chase_channel_id: 'Discord: chase channel id',
   admin_channel_id: 'Discord: admin channel id',
-  discord_admin_role_id: 'Discord: admin role id'
+  discord_admin_role_ids: 'Discord: admin role ids (comma separated)'
 };
 
 async function loadSettings() {
@@ -473,6 +473,33 @@ async function loadSettings() {
     'no extension granted, because telling (a) from (b) needs to know who actually reached out. Re-rule by hand once you know. ' +
     'No ruling earns a \u00a72.4 bonus: left to the letter of the rules a 0-0 draw would pay the shutout bonus to both sides, ' +
     'making it worth more to ignore a fixture than to turn up and lose.</p></div>';
+
+  // Per-division chase channels (§3.3 — each division has its own setup channel).
+  try {
+    var divs = await api('/api/divisions');
+    if (divs.divisions.length) {
+      el.insertAdjacentHTML('beforeend',
+        '<div class="card"><h2>Division chase channels</h2><table><thead><tr><th>Division</th>' +
+        '<th>Chase channel id</th><th></th></tr></thead><tbody>' +
+        divs.divisions.map(function (d) {
+          return '<tr data-div="' + d.id + '"><td>' + esc(d.name) + '</td>' +
+            '<td><input class="chch" value="' + esc(d.chase_channel_id || '') + '" style="width:220px"></td>' +
+            '<td><button class="act savediv">Save</button></td></tr>';
+        }).join('') + '</tbody></table>' +
+        '<p class="note">Where the "still to play" nags for that division are posted. Left blank, they fall back to the ' +
+        'league-wide chase channel above. Inter-divisional friendlies are never chased.</p></div>');
+      el.querySelectorAll('.savediv').forEach(function (button) {
+        button.onclick = async function () {
+          var row = button.closest('tr');
+          try {
+            await post('/api/divisions/' + row.getAttribute('data-div'),
+              { chase_channel_id: row.querySelector('.chch').value });
+            toast('Division channel saved.');
+          } catch (error) { toast(error.message); }
+        };
+      });
+    }
+  } catch (error) { /* divisions not imported yet */ }
 
   document.getElementById('savesettings').onclick = async function () {
     var updates = {};
