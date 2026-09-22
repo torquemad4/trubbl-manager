@@ -1,0 +1,22 @@
+{
+  "name": "trubbl-manager",
+  "version": "1.0.0",
+  "private": true,
+  "description": "TRUBBL league manager — round windows, forfeits, TourPlay import and Discord, on Cloudflare Workers.",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "migrate:local": "wrangler d1 migrations apply trubbl --local",
+    "migrate:remote": "wrangler d1 migrations apply trubbl --remote",
+    "discord:register": "node scripts/register-commands.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260922.1",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8",
+    "wrangler": "^4.136.3"
+  }
+}

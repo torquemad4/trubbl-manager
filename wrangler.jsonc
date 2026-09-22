@@ -1,0 +1,33 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "trubbl-manager",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-09-01",
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "trubbl",
+      "database_id": "42a7db67-c76c-4a03-8cc2-a8667d7d2bf5",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  // 08:00 UTC daily: sync TourPlay, move windows on, chase whoever is late.
+  "triggers": { "crons": ["0 8 * * *"] },
+
+  // Set these to your Cloudflare Access application before the portal will let
+  // anyone in. Secrets (Discord tokens) go in with `wrangler secret put`.
+  "vars": {
+    "ACCESS_TEAM_DOMAIN": "",
+    "ACCESS_AUD": "",
+    "DISCORD_APP_ID": "",
+    "DISCORD_GUILD_ID": ""
+  },
+
+  "routes": [
+    { "pattern": "trubbl.torquemada.uk", "custom_domain": true }
+  ],
+
+  "observability": { "enabled": true }
+}
