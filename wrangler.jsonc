@@ -19,8 +19,8 @@
   // Set these to your Cloudflare Access application before the portal will let
   // anyone in. Secrets (Discord tokens) go in with `wrangler secret put`.
   "vars": {
-    "ACCESS_TEAM_DOMAIN": "",
-    "ACCESS_AUD": "",
+    "ACCESS_TEAM_DOMAIN": "flat-wave-abfe.cloudflareaccess.com",
+    "ACCESS_AUD": "5db2150880a43139084ddc892977c8bde38c8a74787a72816ff5edbfbfaf24b3",
     "DISCORD_APP_ID": "",
     "DISCORD_GUILD_ID": ""
   },
