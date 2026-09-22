@@ -53,6 +53,16 @@ function optionMap(options: InteractionOption[] | undefined): Record<string, str
   return map;
 }
 
+/** §3.2 outcomes, in the language the rules use. */
+export const RULING_LABELS: Record<RulingKind, string> = {
+  concession: 'concession',
+  no_agreement: 'no agreement reached',
+  no_attempt: 'neither coach attempted',
+  forfeit: 'forfeit',
+  double_forfeit: 'double forfeit',
+  void: 'void',
+};
+
 // ------------------------------------------------------------- formatting ---
 
 function shortDate(iso: string | null): string {
@@ -73,7 +83,7 @@ function fixtureLine(fixture: FixtureView, withMentions = false): string {
   const heading = `**${fixture.homeTeam}** (${home}) v **${fixture.awayTeam}** (${away})`;
 
   if (fixture.rulingKind) {
-    return `${heading} — ${fixture.rulingKind.replace('_', ' ')} ${fixture.homeScore}–${fixture.awayScore}`;
+    return `${heading} — ${RULING_LABELS[fixture.rulingKind]} ${fixture.homeScore}–${fixture.awayScore}`;
   }
   if (fixture.status === 'played') {
     return `${heading} — ${fixture.homeScore}–${fixture.awayScore}`;
@@ -143,7 +153,7 @@ export async function handleCommand(env: Env, interaction: Interaction): Promise
       return extendCommand(env, season.id, user, options['days'] ?? '', options['reason'] ?? '', map);
     case 'forfeit':
       if (!isAdmin(interaction, map['discord_admin_role_id'] ?? '')) {
-        return replyJson('Only league admins can rule a forfeit.');
+        return replyJson('Only the Lord Commissioner can rule on an unplayed game.');
       }
       return forfeitCommand(env, user, options, map);
     default:
@@ -178,16 +188,25 @@ async function statusCommand(env: Env, seasonId: number, leagueName: string) {
 }
 
 async function tableCommand(env: Env, seasonId: number) {
-  const rows = await standingsFor(env, seasonId);
-  if (rows.length === 0) return replyJson('No results yet.');
+  const groups = await standingsFor(env, seasonId);
+  const withRows = groups.filter((g) => g.table.length > 0);
+  if (withRows.length === 0) return replyJson('No results yet.');
 
-  const lines = rows.map(
-    (r) =>
-      `${String(r.position).padStart(2)}. ${r.teamName} — ${r.points} pts ` +
-      `(${r.won}/${r.drawn}/${r.lost}, TD ${r.touchdownDifference >= 0 ? '+' : ''}${r.touchdownDifference}` +
-      `${r.forfeitsGiven ? `, ${r.forfeitsGiven} forfeit${r.forfeitsGiven === 1 ? '' : 's'} given` : ''})`,
-  );
-  return replyJson(`**League table**\n${clamp(lines)}`, false);
+  const blocks = withRows.map((group) => {
+    const heading = group.division ? `**${group.division.name} Division**` : '**League table**';
+    const lines = group.table.map(
+      (r) =>
+        `${String(r.position).padStart(2)}. ${r.teamName} — **${r.points}** ` +
+        `(${r.won}/${r.drawn}/${r.lost}, TD ${sign(r.netTouchdowns)}, CAS ${sign(r.netCasualties)}` +
+        `${r.bonusPoints ? `, +${r.bonusPoints} bonus` : ''})`,
+    );
+    return `${heading}\n${lines.join('\n')}`;
+  });
+  return replyJson(clamp(blocks.join('\n\n').split('\n')), false);
+}
+
+function sign(value: number): string {
+  return value > 0 ? `+${value}` : String(value);
 }
 
 async function outstandingCommand(env: Env, seasonId: number) {
@@ -353,21 +372,32 @@ async function forfeitCommand(
   const fixtureId = Number(options['match']);
   if (!Number.isFinite(fixtureId)) return replyJson('Give the fixture id — you can see it in the portal.');
 
+  const outcome = (options['outcome'] ?? '').toLowerCase();
   const side = (options['side'] ?? '').toLowerCase();
-  if (!['home', 'away', 'both'].includes(side)) return replyJson('`side` must be home, away or both.');
 
-  const kind: RulingKind = side === 'both' ? 'double_forfeit' : 'forfeit';
+  // §3.2: which of the three outcomes applies, and who (if anyone) is at fault.
+  let kind: RulingKind;
+  let atFault: 'home' | 'away' | 'both' | null;
+  if (outcome === 'no_agreement') {
+    kind = 'no_agreement';
+    atFault = null;
+  } else if (outcome === 'no_attempt') {
+    kind = 'no_attempt';
+    atFault = null;
+  } else if (outcome === 'concession') {
+    if (!['home', 'away'].includes(side)) {
+      return replyJson('A concession needs `side` set to whichever coach did not respond.');
+    }
+    kind = 'concession';
+    atFault = side as 'home' | 'away';
+  } else {
+    return replyJson('`outcome` must be concession, no_agreement or no_attempt.');
+  }
+
   const fixture = await fixtureById(env, fixtureId);
   if (!fixture) return replyJson(`No fixture ${fixtureId}.`);
 
-  const ruled = await ruleFixture(
-    env,
-    fixtureId,
-    kind,
-    side as 'home' | 'away' | 'both',
-    options['reason'] ?? '',
-    `discord:${user.username}`,
-  );
+  const ruled = await ruleFixture(env, fixtureId, kind, atFault, options['reason'] ?? '', `discord:${user.username}`);
 
   const announceChannel = map['announce_channel_id'] ?? '';
   if (announceChannel) {

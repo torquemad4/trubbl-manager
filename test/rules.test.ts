@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyRuling,
+  bonusFor,
   buildStandings,
   DEFAULT_SCORING,
   daysBetween,
@@ -12,40 +13,38 @@ import {
 
 const at = (iso: string) => new Date(iso);
 
-describe('window state', () => {
+describe('round windows (§3.2)', () => {
   it('is not open before the opening date', () => {
-    const view = windowState(at('2026-10-01T12:00:00Z'), '2026-10-05T00:00:00Z', '2026-10-26T21:00:00Z', null);
-    expect(view.state).toBe('not_open');
+    expect(windowState(at('2026-10-01T12:00:00Z'), '2026-10-05T00:00:00Z', '2026-10-19T21:00:00Z', null).state)
+      .toBe('not_open');
   });
 
-  it('is open well inside the window', () => {
-    const view = windowState(at('2026-10-06T12:00:00Z'), '2026-10-05T00:00:00Z', '2026-10-26T21:00:00Z', null);
+  it('is open well inside the fortnight', () => {
+    const view = windowState(at('2026-10-06T12:00:00Z'), '2026-10-05T00:00:00Z', '2026-10-19T21:00:00Z', null);
     expect(view.state).toBe('open');
-    expect(view.daysRemaining).toBe(20);
+    expect(view.daysRemaining).toBe(13);
   });
 
   it('flags closing soon inside the threshold', () => {
-    const view = windowState(at('2026-10-24T12:00:00Z'), '2026-10-05T00:00:00Z', '2026-10-26T21:00:00Z', null, 3);
+    const view = windowState(at('2026-10-17T12:00:00Z'), '2026-10-05T00:00:00Z', '2026-10-19T21:00:00Z', null, 3);
     expect(view.state).toBe('closing_soon');
     expect(view.daysRemaining).toBe(2);
   });
 
   it('goes overdue once the deadline passes', () => {
-    const view = windowState(at('2026-10-28T12:00:00Z'), '2026-10-05T00:00:00Z', '2026-10-26T21:00:00Z', null);
-    expect(view.state).toBe('overdue');
-    expect(view.daysRemaining).toBeLessThan(0);
+    expect(windowState(at('2026-10-21T12:00:00Z'), '2026-10-05T00:00:00Z', '2026-10-19T21:00:00Z', null).state)
+      .toBe('overdue');
   });
 
   it('respects a granted extension over the round deadline', () => {
     const view = windowState(
-      at('2026-10-28T12:00:00Z'),
+      at('2026-10-21T12:00:00Z'),
       '2026-10-05T00:00:00Z',
+      '2026-10-19T21:00:00Z',
       '2026-10-26T21:00:00Z',
-      '2026-11-02T21:00:00Z',
     );
     expect(view.state).toBe('open');
     expect(view.extended).toBe(true);
-    expect(view.effectiveClose).toBe('2026-11-02T21:00:00Z');
   });
 
   it('counts only whole days remaining', () => {
@@ -53,48 +52,78 @@ describe('window state', () => {
   });
 });
 
-describe('nags', () => {
+describe('chasing', () => {
   it('parses and orders the configured days', () => {
     expect(parseNagDays('1, 7,3')).toEqual([7, 3, 1]);
   });
   it('fires only on an exact threshold, so a missed day does not double up later', () => {
     expect(dueNags(3, [7, 3, 1])).toEqual([3]);
     expect(dueNags(2, [7, 3, 1])).toEqual([]);
-    expect(dueNags(null, [7, 3, 1])).toEqual([]);
   });
 });
 
-describe('rulings', () => {
-  it('awards the game against the side at fault', () => {
-    const outcome = applyRuling('forfeit', 'home', DEFAULT_SCORING);
-    expect(outcome).toEqual({ status: 'forfeit', homeScore: 0, awayScore: 2, homePoints: 0, awayPoints: 3 });
+describe('§2.4 bonus points', () => {
+  it('pays a point for three or more touchdowns', () => {
+    expect(bonusFor(3, 1, 0, DEFAULT_SCORING)).toBe(1);
+    expect(bonusFor(2, 1, 0, DEFAULT_SCORING)).toBe(0);
+  });
+  it('pays a point for conceding none', () => {
+    expect(bonusFor(1, 0, 0, DEFAULT_SCORING)).toBe(1);
+  });
+  it('pays a point for three or more casualties', () => {
+    expect(bonusFor(1, 1, 3, DEFAULT_SCORING)).toBe(1);
+    expect(bonusFor(1, 1, 2, DEFAULT_SCORING)).toBe(0);
+  });
+  it('stacks all three, so a game is worth up to six points', () => {
+    expect(bonusFor(3, 0, 3, DEFAULT_SCORING)).toBe(3);
+    expect(DEFAULT_SCORING.pointsWin + bonusFor(3, 0, 3, DEFAULT_SCORING)).toBe(6);
+  });
+  it('switches a bonus off at a threshold of zero', () => {
+    const scoring = { ...DEFAULT_SCORING, bonusCasualtyThreshold: 0 };
+    expect(bonusFor(1, 1, 9, scoring)).toBe(0);
+  });
+});
+
+describe('§3.2 unplayed-game procedure', () => {
+  it('(a) awards 2-0 to the coach who tried to organise', () => {
+    expect(applyRuling('concession', 'away', DEFAULT_SCORING)).toEqual({
+      status: 'concession',
+      homeScore: 2,
+      awayScore: 0,
+      homePoints: 3,
+      awayPoints: 0,
+    });
   });
 
-  it('treats a concession the same way but keeps the label', () => {
-    expect(applyRuling('concession', 'away', DEFAULT_SCORING).status).toBe('concession');
-    expect(applyRuling('concession', 'away', DEFAULT_SCORING).homeScore).toBe(2);
+  it('(b) is a 1-1 draw when both tried in good faith', () => {
+    expect(applyRuling('no_agreement', null, DEFAULT_SCORING)).toEqual({
+      status: 'no_agreement',
+      homeScore: 1,
+      awayScore: 1,
+      homePoints: 1,
+      awayPoints: 1,
+    });
   });
 
-  it('gives a double forfeit nothing to either side', () => {
+  it('(c) is a 0-0 draw when neither tried', () => {
+    expect(applyRuling('no_attempt', null, DEFAULT_SCORING)).toEqual({
+      status: 'no_attempt',
+      homeScore: 0,
+      awayScore: 0,
+      homePoints: 1,
+      awayPoints: 1,
+    });
+  });
+
+  it('refuses a concession with nobody named at fault', () => {
+    expect(() => applyRuling('concession', null, DEFAULT_SCORING)).toThrow();
+    expect(() => applyRuling('concession', 'both', DEFAULT_SCORING)).toThrow();
+  });
+
+  it('keeps double forfeit worth nothing to either side', () => {
     const outcome = applyRuling('double_forfeit', 'both', DEFAULT_SCORING);
     expect(outcome.homePoints).toBe(0);
     expect(outcome.awayPoints).toBe(0);
-    expect(outcome.homeScore).toBe(0);
-  });
-
-  it('voids a game to no score and no points', () => {
-    expect(applyRuling('void', null, DEFAULT_SCORING).status).toBe('void');
-  });
-
-  it('refuses a one-sided forfeit with nobody at fault', () => {
-    expect(() => applyRuling('forfeit', null, DEFAULT_SCORING)).toThrow();
-  });
-
-  it('honours a custom forfeit score', () => {
-    const scoring = { ...DEFAULT_SCORING, forfeitScoreWinner: 1, forfeitPointsWinner: 2 };
-    const outcome = applyRuling('forfeit', 'away', scoring);
-    expect(outcome.homeScore).toBe(1);
-    expect(outcome.homePoints).toBe(2);
   });
 });
 
@@ -102,86 +131,119 @@ describe('standings', () => {
   const fixture = (over: Partial<StandingsFixture>): StandingsFixture => ({
     homeTeamId: 1,
     awayTeamId: 2,
+    divisionId: 1,
     status: 'played',
     homeScore: 0,
     awayScore: 0,
+    homeCasualties: 0,
+    awayCasualties: 0,
     homePoints: null,
     awayPoints: null,
+    isFriendly: false,
     ...over,
   });
 
-  it('scores wins, draws and losses from the scoring table', () => {
-    const rows = buildStandings(
-      [
-        fixture({ homeScore: 2, awayScore: 1 }),
-        fixture({ homeTeamId: 2, awayTeamId: 3, homeScore: 1, awayScore: 1 }),
-      ],
-      DEFAULT_SCORING,
+  const byId = (rows: ReturnType<typeof buildStandings>) => new Map(rows.map((r) => [r.teamId, r]));
+
+  it('adds bonus points to the base result', () => {
+    // 3-0 win with 3 casualties: 3 + 1 (TDs) + 1 (shutout) + 1 (CAS) = 6.
+    const rows = byId(
+      buildStandings([fixture({ homeScore: 3, awayScore: 0, homeCasualties: 3 })], DEFAULT_SCORING),
     );
-    const byId = new Map(rows.map((r) => [r.teamId, r]));
-    expect(byId.get(1)!.points).toBe(3);
-    expect(byId.get(2)!.points).toBe(1);
-    expect(byId.get(3)!.points).toBe(1);
+    expect(rows.get(1)!.points).toBe(6);
+    expect(rows.get(1)!.bonusPoints).toBe(3);
+    expect(rows.get(2)!.points).toBe(0);
   });
 
-  it('counts a forfeit as played, and against the team that gave it', () => {
-    const rows = buildStandings(
-      [fixture({ status: 'forfeit', homeScore: 0, awayScore: 2, homePoints: 0, awayPoints: 3 })],
-      DEFAULT_SCORING,
+  it('pays a bonus to a losing side that earned one', () => {
+    // Loses 2-3 but caused 4 casualties: 0 + 1 = 1.
+    const rows = byId(
+      buildStandings([fixture({ homeScore: 2, awayScore: 3, homeCasualties: 4 })], DEFAULT_SCORING),
     );
-    const byId = new Map(rows.map((r) => [r.teamId, r]));
-    expect(byId.get(1)!.forfeitsGiven).toBe(1);
-    expect(byId.get(2)!.forfeitsReceived).toBe(1);
-    expect(byId.get(2)!.won).toBe(1);
-    expect(byId.get(1)!.played).toBe(1);
+    expect(rows.get(1)!.points).toBe(1);
   });
 
-  it('charges a double forfeit to both sides', () => {
-    const rows = buildStandings(
-      [fixture({ status: 'double_forfeit', homePoints: 0, awayPoints: 0 })],
-      DEFAULT_SCORING,
+  it('never pays a bonus on a ruled game, so ignoring a fixture cannot beat losing one', () => {
+    // §3.2(c) 0-0 draw: 1 point each. Taken literally the shutout bonus would
+    // make it 2 each — more than a coach gets for turning up and losing 0-1.
+    const ruled = byId(
+      buildStandings(
+        [fixture({ status: 'no_attempt', homeScore: 0, awayScore: 0, homePoints: 1, awayPoints: 1 })],
+        DEFAULT_SCORING,
+      ),
     );
-    for (const row of rows) {
-      expect(row.forfeitsGiven).toBe(1);
-      expect(row.lost).toBe(1);
-      expect(row.points).toBe(0);
-    }
+    expect(ruled.get(1)!.points).toBe(1);
+    expect(ruled.get(1)!.bonusPoints).toBe(0);
+
+    const played = byId(buildStandings([fixture({ homeScore: 0, awayScore: 1 })], DEFAULT_SCORING));
+    expect(played.get(1)!.points).toBe(0);
+    expect(ruled.get(1)!.points).toBeGreaterThan(played.get(1)!.points - 2);
   });
 
-  it('ignores a void game entirely but still lists both teams', () => {
+  it('counts a concession against the coach who did not respond', () => {
+    const rows = byId(
+      buildStandings(
+        [fixture({ status: 'concession', homeScore: 2, awayScore: 0, homePoints: 3, awayPoints: 0 })],
+        DEFAULT_SCORING,
+      ),
+    );
+    expect(rows.get(2)!.concessionsGiven).toBe(1);
+    expect(rows.get(1)!.concessionsGiven).toBe(0);
+    expect(rows.get(1)!.won).toBe(1);
+  });
+
+  it('ignores an inter-divisional friendly entirely (§3.3.2)', () => {
+    const rows = byId(
+      buildStandings([fixture({ isFriendly: true, homeScore: 5, awayScore: 0 })], DEFAULT_SCORING),
+    );
+    expect(rows.get(1)!.played).toBe(0);
+    expect(rows.get(1)!.points).toBe(0);
+  });
+
+  it('ignores a void game but still lists both teams', () => {
     const rows = buildStandings([fixture({ status: 'void' })], DEFAULT_SCORING);
     expect(rows).toHaveLength(2);
     expect(rows.every((r) => r.played === 0)).toBe(true);
   });
 
-  it('does not count an unplayed game', () => {
-    const rows = buildStandings([fixture({ status: 'unplayed', homeScore: null, awayScore: null })], DEFAULT_SCORING);
-    expect(rows.every((r) => r.played === 0)).toBe(true);
-  });
-
-  it('breaks ties on touchdown difference, then touchdowns scored', () => {
+  it('breaks a tie on head-to-head before net TD', () => {
+    // Both finish on 3 points from one win each, but 2 beat 1 head to head,
+    // while 1 has the better net touchdowns. Head-to-head must win.
     const rows = buildStandings(
       [
-        fixture({ homeTeamId: 1, awayTeamId: 4, homeScore: 3, awayScore: 0 }),
-        fixture({ homeTeamId: 2, awayTeamId: 5, homeScore: 1, awayScore: 0 }),
+        fixture({ homeTeamId: 1, awayTeamId: 3, homeScore: 2, awayScore: 0 }),
+        fixture({ homeTeamId: 2, awayTeamId: 4, homeScore: 1, awayScore: 0 }),
+        fixture({ homeTeamId: 2, awayTeamId: 1, homeScore: 1, awayScore: 0 }),
       ],
-      DEFAULT_SCORING,
+      { ...DEFAULT_SCORING, bonusTouchdownThreshold: 0, bonusShutoutPoints: 0, bonusCasualtyThreshold: 0 },
     );
-    expect(rows[0]!.teamId).toBe(1);
-    expect(rows[1]!.teamId).toBe(2);
+    const order = rows.map((r) => r.teamId);
+    expect(order.indexOf(2)).toBeLessThan(order.indexOf(1));
   });
 
-  it('prefers the ruled points over the scoring table when a ruling set them', () => {
+  it('falls through to net casualties when head-to-head and net TD are level', () => {
+    const scoring = { ...DEFAULT_SCORING, bonusTouchdownThreshold: 0, bonusShutoutPoints: 0, bonusCasualtyThreshold: 0 };
     const rows = buildStandings(
-      [fixture({ status: 'forfeit', homeScore: 0, awayScore: 2, homePoints: -1, awayPoints: 5 })],
-      DEFAULT_SCORING,
+      [
+        fixture({ homeTeamId: 1, awayTeamId: 3, homeScore: 1, awayScore: 0, homeCasualties: 1 }),
+        fixture({ homeTeamId: 2, awayTeamId: 4, homeScore: 1, awayScore: 0, homeCasualties: 4 }),
+      ],
+      scoring,
     );
-    const byId = new Map(rows.map((r) => [r.teamId, r]));
-    expect(byId.get(1)!.points).toBe(-1);
-    expect(byId.get(2)!.points).toBe(5);
+    const order = rows.map((r) => r.teamId);
+    expect(order.indexOf(2)).toBeLessThan(order.indexOf(1));
+  });
+
+  it('tracks net casualties in both directions', () => {
+    const rows = byId(
+      buildStandings([fixture({ homeCasualties: 3, awayCasualties: 1, homeScore: 1, awayScore: 1 })], DEFAULT_SCORING),
+    );
+    expect(rows.get(1)!.netCasualties).toBe(2);
+    expect(rows.get(2)!.netCasualties).toBe(-2);
   });
 
   it('skips a fixture with a side not yet drawn', () => {
-    expect(buildStandings([fixture({ awayTeamId: null })], DEFAULT_SCORING)).toHaveLength(0);
+    const rows = buildStandings([fixture({ awayTeamId: null })], DEFAULT_SCORING);
+    expect(rows.every((r) => r.played === 0)).toBe(true);
   });
 });

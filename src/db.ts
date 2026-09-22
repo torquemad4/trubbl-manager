@@ -54,11 +54,14 @@ export function scoringFrom(map: Record<string, string>): Scoring {
     pointsWin: num(map, 'points_win', DEFAULT_SCORING.pointsWin),
     pointsDraw: num(map, 'points_draw', DEFAULT_SCORING.pointsDraw),
     pointsLoss: num(map, 'points_loss', DEFAULT_SCORING.pointsLoss),
-    forfeitScoreWinner: num(map, 'forfeit_score_winner', DEFAULT_SCORING.forfeitScoreWinner),
-    forfeitScoreLoser: num(map, 'forfeit_score_loser', DEFAULT_SCORING.forfeitScoreLoser),
-    forfeitPointsWinner: num(map, 'forfeit_points_winner', DEFAULT_SCORING.forfeitPointsWinner),
-    forfeitPointsLoser: num(map, 'forfeit_points_loser', DEFAULT_SCORING.forfeitPointsLoser),
-    doubleForfeitPoints: num(map, 'double_forfeit_points', DEFAULT_SCORING.doubleForfeitPoints),
+    bonusTouchdownThreshold: num(map, 'bonus_touchdown_threshold', DEFAULT_SCORING.bonusTouchdownThreshold),
+    bonusTouchdownPoints: num(map, 'bonus_touchdown_points', DEFAULT_SCORING.bonusTouchdownPoints),
+    bonusShutoutPoints: num(map, 'bonus_shutout_points', DEFAULT_SCORING.bonusShutoutPoints),
+    bonusCasualtyThreshold: num(map, 'bonus_casualty_threshold', DEFAULT_SCORING.bonusCasualtyThreshold),
+    bonusCasualtyPoints: num(map, 'bonus_casualty_points', DEFAULT_SCORING.bonusCasualtyPoints),
+    concessionScoreWinner: num(map, 'concession_score_winner', DEFAULT_SCORING.concessionScoreWinner),
+    concessionScoreLoser: num(map, 'concession_score_loser', DEFAULT_SCORING.concessionScoreLoser),
+    noAgreementScore: num(map, 'no_agreement_score', DEFAULT_SCORING.noAgreementScore),
   };
 }
 

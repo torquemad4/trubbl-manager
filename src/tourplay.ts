@@ -65,11 +65,17 @@ export function raceName(teamRace: string | null | undefined): string {
   return RACE_ALIASES[spaced] ?? spaced;
 }
 
+export interface TourplayCategory {
+  id: number;
+  name: string;
+}
+
 export interface TourplayTournament {
   id: number | null;
   name: string;
   slug: string;
-  categoryIds: number[];
+  /** TourPlay categories. TRUBBL uses one per division (§3.3). */
+  categories: TourplayCategory[];
   initDate: string | null;
   finishDate: string | null;
 }
@@ -87,7 +93,12 @@ export async function fetchTournament(slug: string): Promise<TourplayTournament>
     id: raw?.id ?? null,
     name: raw?.name ?? slug,
     slug: raw?.nameNormalized ?? slug,
-    categoryIds: (raw?.categories ?? []).map((c: any) => c?.id).filter((id: any) => typeof id === 'number'),
+    categories: (raw?.categories ?? [])
+      .filter((c: any) => typeof c?.id === 'number')
+      .map((c: any, index: number) => ({
+        id: c.id as number,
+        name: String(c?.name ?? c?.categoryName ?? `Division ${index + 1}`),
+      })),
     initDate: raw?.initDate ?? null,
     finishDate: raw?.finishDate ?? null,
   };
@@ -95,6 +106,7 @@ export async function fetchTournament(slug: string): Promise<TourplayTournament>
 
 export interface TourplayEntrant {
   playerId: string;
+  categoryId: number | null;
   coachName: string;
   teamName: string;
   race: string;
@@ -112,7 +124,7 @@ export async function fetchEntrants(slug: string): Promise<TourplayEntrant[]> {
   const entrants: TourplayEntrant[] = [];
   const seen = new Set<string>();
 
-  for (const categoryId of tournament.categoryIds) {
+  for (const { id: categoryId } of tournament.categories) {
     let payload: any;
     try {
       payload = await getJson<any>(`api/inscriptions/${slug}/category/${categoryId}/inscriptions`, slug);
@@ -133,6 +145,7 @@ export async function fetchEntrants(slug: string): Promise<TourplayEntrant[]> {
         const naf = row?.player?.nafNumber;
         entrants.push({
           playerId: key,
+          categoryId,
           coachName: row?.player?.userNameToShow ?? '',
           teamName: row?.teamName ?? '',
           race: raceName(row?.teamRace),
@@ -158,6 +171,7 @@ export interface TourplaySide {
 
 export interface TourplayMatch {
   matchId: string | null;
+  categoryId: number | null;
   round: number;
   order: number;
   state: number | null;
@@ -211,6 +225,7 @@ export async function fetchSchedule(slug: string, phaseIdHint?: number | null): 
     const state = numberOrNull(m?.state);
     return {
       matchId: m?.matchId === undefined || m?.matchId === null ? null : String(m.matchId),
+      categoryId: typeof m?.categoryId === 'number' ? m.categoryId : null,
       round: Number(m?.round ?? currentRound) || 0,
       order: Number(m?.order ?? 0) || 0,
       state,

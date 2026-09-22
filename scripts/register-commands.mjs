@@ -53,18 +53,28 @@ const command = {
     {
       type: SUBCOMMAND,
       name: 'forfeit',
-      description: 'Admin: rule a forfeit on a fixture',
+      description: 'Lord Commissioner: rule on a game that never got played (§3.2)',
       options: [
         { type: INTEGER, name: 'match', description: 'Fixture id, from the portal', required: true },
         {
           type: STRING,
-          name: 'side',
-          description: 'Who is at fault',
+          name: 'outcome',
+          description: 'Which of the three §3.2 outcomes applies',
           required: true,
+          choices: [
+            { name: '(a) one coach tried, no response — 2-0', value: 'concession' },
+            { name: '(b) both tried, no agreement — 1-1', value: 'no_agreement' },
+            { name: '(c) neither tried — 0-0', value: 'no_attempt' },
+          ],
+        },
+        {
+          type: STRING,
+          name: 'side',
+          description: 'For (a) only: the coach who did not respond',
+          required: false,
           choices: [
             { name: 'home', value: 'home' },
             { name: 'away', value: 'away' },
-            { name: 'both', value: 'both' },
           ],
         },
         { type: STRING, name: 'reason', description: 'Why', required: false },

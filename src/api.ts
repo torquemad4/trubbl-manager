@@ -2,6 +2,7 @@
 
 import { requireAdmin, viewerFor } from './auth.js';
 import { activeSeason, audit, json, nowIso, scoringFrom, seasonById, setSetting, settings } from './db.js';
+import { RULING_LABELS } from './commands.js';
 import { announceOnce, mention } from './discord.js';
 import {
   currentRound,
@@ -17,7 +18,7 @@ import {
 import { layOutWindows, tick } from './scheduler.js';
 import { syncSeason } from './sync.js';
 import { fetchTournament, probe } from './tourplay.js';
-import type { Env, RulingKind } from './types.js';
+import { RULING_KINDS, type Env, type RulingKind } from './types.js';
 
 export async function handleApi(request: Request, env: Env, path: string): Promise<Response> {
   const viewer = await viewerFor(request, env);
@@ -164,13 +165,15 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
   if (ruleMatch && method === 'POST') {
     const id = Number(ruleMatch[1]);
     const kind = String(body.kind ?? '') as RulingKind;
-    if (!['forfeit', 'concession', 'double_forfeit', 'void'].includes(kind)) {
-      return json({ error: 'kind must be forfeit, concession, double_forfeit or void' }, 400);
+    if (!RULING_KINDS.includes(kind)) {
+      return json({ error: `kind must be one of ${RULING_KINDS.join(', ')}` }, 400);
     }
     const atFault = body.atFault === null || body.atFault === undefined ? null : String(body.atFault);
+    // §3.2(a): only a concession or forfeit names a side at fault; (b) and (c)
+    // are draws in which neither coach is singled out.
     if (kind === 'forfeit' || kind === 'concession') {
-      if (!['home', 'away', 'both'].includes(atFault ?? '')) {
-        return json({ error: 'atFault must be home, away or both' }, 400);
+      if (!['home', 'away'].includes(atFault ?? '')) {
+        return json({ error: 'a concession needs atFault set to home or away' }, 400);
       }
     }
     const fixture = await ruleFixture(
@@ -193,7 +196,7 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
           `${fixture.homeTeam} (${mention(fixture.homeDiscordId, fixture.homeCoach)}) ` +
           `${fixture.homeScore}–${fixture.awayScore} ` +
           `${fixture.awayTeam} (${mention(fixture.awayDiscordId, fixture.awayCoach)}) ` +
-          `— ${kind.replace('_', ' ')}` +
+          `— ${RULING_LABELS[kind]}` +
           (fixture.rulingReason ? `\nReason: ${fixture.rulingReason}` : ''),
       );
     }
@@ -284,16 +287,18 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
 
   if (path === '/api/standings' && method === 'GET') {
     const season = await activeSeason(env);
-    return json({ standings: season ? await standingsFor(env, season.id) : [] });
+    return json({ divisions: season ? await standingsFor(env, season.id) : [] });
   }
 
   if (path === '/api/coaches' && method === 'GET') {
     const season = await activeSeason(env);
     if (!season) return json({ coaches: [] });
     const { results } = await env.DB.prepare(
-      `SELECT c.*, t.name AS team_name, t.race
-         FROM coach c LEFT JOIN team t ON t.coach_id = c.id
-        WHERE c.season_id = ? ORDER BY c.display_name`,
+      `SELECT c.*, t.name AS team_name, t.race, d.name AS division_name
+         FROM coach c
+         LEFT JOIN team t ON t.coach_id = c.id
+         LEFT JOIN division d ON d.id = t.division_id
+        WHERE c.season_id = ? ORDER BY d.tier, c.display_name`,
     )
       .bind(season.id)
       .all();

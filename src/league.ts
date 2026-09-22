@@ -32,8 +32,13 @@ export interface FixtureView {
   awayDiscordId: string | null;
   homeScore: number | null;
   awayScore: number | null;
+  homeCasualties: number | null;
+  awayCasualties: number | null;
   homePoints: number | null;
   awayPoints: number | null;
+  divisionId: number | null;
+  divisionName: string | null;
+  isFriendly: boolean;
   rulingKind: RulingKind | null;
   rulingReason: string | null;
   extendedTo: string | null;
@@ -45,12 +50,13 @@ export interface FixtureView {
  */
 const FIXTURE_SELECT = `
   SELECT f.id, f.round_id, r.number AS round_number, f.tourplay_match_id, f.status,
-         f.scheduled_for, f.chase_state,
+         f.scheduled_for, f.chase_state, f.is_friendly,
+         f.division_id, d.name AS division_name,
          f.home_team_id, f.away_team_id,
          ht.name AS home_team, at.name AS away_team,
          hc.display_name AS home_coach, ac.display_name AS away_coach,
          hc.discord_user_id AS home_discord, ac.discord_user_id AS away_discord,
-         f.tp_home_score, f.tp_away_score,
+         f.tp_home_score, f.tp_away_score, f.tp_home_cas, f.tp_away_cas,
          ru.kind AS ruling_kind, ru.reason AS ruling_reason,
          ru.home_score AS ruled_home_score, ru.away_score AS ruled_away_score,
          ru.home_points AS ruled_home_points, ru.away_points AS ruled_away_points,
@@ -58,6 +64,7 @@ const FIXTURE_SELECT = `
            WHERE e.fixture_id = f.id AND e.status = 'granted') AS extended_to
     FROM fixture f
     JOIN round r  ON r.id = f.round_id
+    LEFT JOIN division d ON d.id = f.division_id
     LEFT JOIN team ht ON ht.id = f.home_team_id
     LEFT JOIN team at ON at.id = f.away_team_id
     LEFT JOIN coach hc ON hc.id = ht.coach_id
@@ -85,8 +92,14 @@ function toView(row: any): FixtureView {
     awayDiscordId: row.away_discord ?? null,
     homeScore: ruled ? row.ruled_home_score : row.tp_home_score,
     awayScore: ruled ? row.ruled_away_score : row.tp_away_score,
+    // A ruled game never awards casualties: nobody played.
+    homeCasualties: ruled ? 0 : row.tp_home_cas,
+    awayCasualties: ruled ? 0 : row.tp_away_cas,
     homePoints: ruled ? row.ruled_home_points : null,
     awayPoints: ruled ? row.ruled_away_points : null,
+    divisionId: row.division_id ?? null,
+    divisionName: row.division_name ?? null,
+    isFriendly: row.is_friendly === 1,
     rulingKind: ruled ? row.ruling_kind : null,
     rulingReason: ruled ? row.ruling_reason : null,
     extendedTo: row.extended_to ?? null,
@@ -166,37 +179,93 @@ export async function roundWindow(env: Env, round: RoundRow, now = new Date()): 
   return windowState(now, round.opens_at, round.closes_at, null, closingSoon);
 }
 
+export interface DivisionRow {
+  id: number;
+  season_id: number;
+  name: string;
+  tier: number;
+  promote_count: number;
+  relegate_count: number;
+}
+
+export async function divisionsFor(env: Env, seasonId: number): Promise<DivisionRow[]> {
+  const { results } = await env.DB.prepare(
+    'SELECT * FROM division WHERE season_id = ? ORDER BY tier, name',
+  )
+    .bind(seasonId)
+    .all<DivisionRow>();
+  return results ?? [];
+}
+
+/**
+ * The table, one per division. Divisions are separate competitions under
+ * §3.3, so each is scored on its own fixtures and its own head-to-head.
+ */
 export async function standingsFor(env: Env, seasonId: number) {
   const map = await settings(env);
   const scoring = scoringFrom(map);
   const fixtures = await fixturesForSeason(env, seasonId);
+  const divisions = await divisionsFor(env, seasonId);
 
-  const forStandings: StandingsFixture[] = fixtures.map((f) => ({
-    homeTeamId: f.homeTeamId,
-    awayTeamId: f.awayTeamId,
-    status: f.status,
-    homeScore: f.homeScore,
-    awayScore: f.awayScore,
-    homePoints: f.homePoints,
-    awayPoints: f.awayPoints,
-  }));
-
-  const rows = buildStandings(forStandings, scoring);
   const { results: teams } = await env.DB.prepare(
-    `SELECT t.id, t.name, t.race, COALESCE(c.display_name, '') AS coach
+    `SELECT t.id, t.name, t.race, t.division_id, COALESCE(c.display_name, '') AS coach
        FROM team t LEFT JOIN coach c ON c.id = t.coach_id WHERE t.season_id = ?`,
   )
     .bind(seasonId)
-    .all<{ id: number; name: string; race: string; coach: string }>();
+    .all<{ id: number; name: string; race: string; division_id: number | null; coach: string }>();
   const byId = new Map((teams ?? []).map((t) => [t.id, t]));
 
-  return rows.map((row, index) => ({
-    position: index + 1,
-    ...row,
-    teamName: byId.get(row.teamId)?.name ?? `Team ${row.teamId}`,
-    race: byId.get(row.teamId)?.race ?? '',
-    coach: byId.get(row.teamId)?.coach ?? '',
-  }));
+  const toStandings = (list: FixtureView[]): StandingsFixture[] =>
+    list.map((f) => ({
+      homeTeamId: f.homeTeamId,
+      awayTeamId: f.awayTeamId,
+      divisionId: f.divisionId,
+      status: f.status,
+      homeScore: f.homeScore,
+      awayScore: f.awayScore,
+      homeCasualties: f.homeCasualties,
+      awayCasualties: f.awayCasualties,
+      homePoints: f.homePoints,
+      awayPoints: f.awayPoints,
+      isFriendly: f.isFriendly,
+    }));
+
+  const decorate = (rows: ReturnType<typeof buildStandings>) =>
+    rows.map((row, index) => ({
+      position: index + 1,
+      ...row,
+      teamName: byId.get(row.teamId)?.name ?? `Team ${row.teamId}`,
+      race: byId.get(row.teamId)?.race ?? '',
+      coach: byId.get(row.teamId)?.coach ?? '',
+    }));
+
+  if (divisions.length === 0) {
+    return [{ division: null, table: decorate(buildStandings(toStandings(fixtures), scoring)) }];
+  }
+
+  return divisions.map((division) => {
+    const inDivision = fixtures.filter((f) => f.divisionId === division.id);
+    // A team with no fixtures yet still belongs in its division's table.
+    const seeded = (teams ?? [])
+      .filter((t) => t.division_id === division.id)
+      .map<StandingsFixture>((t) => ({
+        homeTeamId: t.id,
+        awayTeamId: null,
+        divisionId: division.id,
+        status: 'unplayed',
+        homeScore: null,
+        awayScore: null,
+        homeCasualties: null,
+        awayCasualties: null,
+        homePoints: null,
+        awayPoints: null,
+        isFriendly: false,
+      }));
+    return {
+      division,
+      table: decorate(buildStandings([...toStandings(inDivision), ...seeded], scoring)),
+    };
+  });
 }
 
 export interface CoachRow {

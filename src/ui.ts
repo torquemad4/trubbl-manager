@@ -294,22 +294,28 @@ async function loadFixtures() {
       return '<option value="' + r.id + '"' + (r.id === chosen ? ' selected' : '') + '>Round ' + r.number + '</option>';
     }).join('') + '</select></label></div></div>';
 
-  html += '<div class="card"><h2>Fixtures</h2><table><thead><tr><th>#</th><th>Match</th><th>Result</th>' +
+  html += '<div class="card"><h2>Fixtures</h2><table><thead><tr><th>#</th><th>Division</th><th>Match</th><th>Result</th>' +
     '<th>Status</th><th>Rule</th></tr></thead><tbody>' +
     data.fixtures.map(function (f) {
       var score = (f.homeScore === null ? '–' : f.homeScore) + ' : ' + (f.awayScore === null ? '–' : f.awayScore);
       return '<tr data-fixture="' + f.id + '">' +
         '<td class="muted">' + f.id + '</td>' +
+        '<td class="muted">' + esc(f.divisionName || (f.isFriendly ? 'inter-div' : '\u2014')) + '</td>' +
         '<td>' + esc(f.homeTeam) + ' <span class="muted">v</span> ' + esc(f.awayTeam) +
           '<div class="muted" style="font-size:12px">' + esc(f.homeCoach) + ' v ' + esc(f.awayCoach) + '</div></td>' +
         '<td>' + score + '</td>' +
-        '<td><span class="pill">' + esc(f.status) + '</span>' +
+        '<td><span class="pill">' + esc(f.status.replace(/_/g, ' ')) + '</span>' +
+          (f.isFriendly ? '<div class="muted" style="font-size:12px">friendly \u2014 no points</div>' : '') +
           (f.rulingReason ? '<div class="muted" style="font-size:12px">' + esc(f.rulingReason) + '</div>' : '') + '</td>' +
         '<td><div class="row">' +
-          '<select class="kind"><option value="forfeit">forfeit</option><option value="concession">concession</option>' +
-            '<option value="double_forfeit">double forfeit</option><option value="void">void</option></select>' +
-          '<select class="fault"><option value="home">home at fault</option><option value="away">away at fault</option>' +
-            '<option value="both">both</option></select>' +
+          '<select class="kind">' +
+            '<option value="concession">(a) one tried, no response \u2014 2-0</option>' +
+            '<option value="no_agreement">(b) both tried, no agreement \u2014 1-1</option>' +
+            '<option value="no_attempt">(c) neither tried \u2014 0-0</option>' +
+            '<option value="double_forfeit">double forfeit \u2014 0-0, no points</option>' +
+            '<option value="void">void \u2014 does not count</option></select>' +
+          '<select class="fault"><option value="home">home did not respond</option>' +
+            '<option value="away">away did not respond</option></select>' +
           '<input class="reason" placeholder="reason" style="width:140px">' +
           '<button class="act rule">Apply</button>' +
           (f.rulingKind ? '<button class="act danger revert">Undo</button>' : '') +
@@ -326,9 +332,12 @@ async function loadFixtures() {
     button.onclick = async function () {
       var row = button.closest('tr');
       try {
+        var kind = row.querySelector('.kind').value;
+        // Only a concession names a side; (b) and (c) are draws with nobody at fault.
+        var needsFault = kind === 'concession' || kind === 'forfeit';
         await post('/api/fixtures/' + row.getAttribute('data-fixture') + '/rule', {
-          kind: row.querySelector('.kind').value,
-          atFault: row.querySelector('.fault').value,
+          kind: kind,
+          atFault: needsFault ? row.querySelector('.fault').value : null,
           reason: row.querySelector('.reason').value
         });
         toast('Ruled, and announced in Discord.');
@@ -373,22 +382,38 @@ async function loadExtensions() {
 
 async function loadTable() {
   var data = await api('/api/standings');
-  document.getElementById('tab-table').innerHTML = '<div class="card"><h2>League table</h2>' +
-    '<table><thead><tr><th>#</th><th>Team</th><th>Coach</th><th>P</th><th>W</th><th>D</th><th>L</th>' +
-    '<th>TD+</th><th>TD−</th><th>Diff</th><th>FF</th><th>Pts</th></tr></thead><tbody>' +
-    data.standings.map(function (r) {
-      return '<tr><td>' + r.position + '</td><td>' + esc(r.teamName) + '</td><td class="muted">' + esc(r.coach) + '</td>' +
-        '<td>' + r.played + '</td><td>' + r.won + '</td><td>' + r.drawn + '</td><td>' + r.lost + '</td>' +
-        '<td>' + r.touchdownsFor + '</td><td>' + r.touchdownsAgainst + '</td>' +
-        '<td>' + (r.touchdownDifference > 0 ? '+' : '') + r.touchdownDifference + '</td>' +
-        '<td>' + (r.forfeitsGiven || '') + '</td><td><strong>' + r.points + '</strong></td></tr>';
-    }).join('') + '</tbody></table><p class="note">FF counts forfeits given, which is what tells you who to keep an eye on.</p></div>';
+  var groups = (data.divisions || []).filter(function (g) { return g.table.length; });
+  if (!groups.length) {
+    document.getElementById('tab-table').innerHTML = '<div class="card"><h2>League table</h2><p class="muted">No results yet.</p></div>';
+    return;
+  }
+  document.getElementById('tab-table').innerHTML = groups.map(function (g) {
+    var title = g.division ? esc(g.division.name) + ' Division' : 'League table';
+    return '<div class="card"><h2>' + title + '</h2>' +
+      '<table><thead><tr><th>#</th><th>Team</th><th>Coach</th><th>P</th><th>W</th><th>D</th><th>L</th>' +
+      '<th>TD+</th><th>TD\u2212</th><th>Net TD</th><th>Net CAS</th><th>Bonus</th><th>Conc</th><th>Pts</th></tr></thead><tbody>' +
+      g.table.map(function (r) {
+        return '<tr><td>' + r.position + '</td><td>' + esc(r.teamName) + '</td>' +
+          '<td class="muted">' + esc(r.coach) + '</td>' +
+          '<td>' + r.played + '</td><td>' + r.won + '</td><td>' + r.drawn + '</td><td>' + r.lost + '</td>' +
+          '<td>' + r.touchdownsFor + '</td><td>' + r.touchdownsAgainst + '</td>' +
+          '<td>' + signed(r.netTouchdowns) + '</td><td>' + signed(r.netCasualties) + '</td>' +
+          '<td class="muted">' + (r.bonusPoints ? '+' + r.bonusPoints : '') + '</td>' +
+          '<td class="muted">' + (r.concessionsGiven || '') + '</td>' +
+          '<td><strong>' + r.points + '</strong></td></tr>';
+      }).join('') + '</tbody></table>' +
+      '<p class="note">Points include \u00a72.4 bonuses (3+ TDs, no TDs conceded, 3+ casualties). ' +
+      'Ties break on head-to-head, then net TD, then net CAS, then their sum. ' +
+      'Conc counts unplayed games ruled against that team.</p></div>';
+  }).join('');
 }
+
+function signed(value) { return (value > 0 ? '+' : '') + value; }
 
 async function loadCoaches() {
   var data = await api('/api/coaches');
   var el = document.getElementById('tab-coaches');
-  el.innerHTML = '<div class="card"><h2>Coaches</h2><table><thead><tr><th>Coach</th><th>Team</th><th>NAF</th>' +
+  el.innerHTML = '<div class="card"><h2>Coaches</h2><table><thead><tr><th>Coach</th><th>Team</th><th>Division</th><th>NAF</th>' +
     '<th>Discord id</th><th>Email</th><th></th></tr></thead><tbody>' +
     data.coaches.map(function (c) {
       return '<tr data-coach="' + c.id + '"><td>' + esc(c.display_name) + '</td>' +
@@ -417,11 +442,14 @@ async function loadCoaches() {
 var SETTING_LABELS = {
   league_name: 'League name',
   points_win: 'Points for a win', points_draw: 'Points for a draw', points_loss: 'Points for a loss',
-  forfeit_score_winner: 'Forfeit: TDs to the team that turned up',
-  forfeit_score_loser: 'Forfeit: TDs to the team that did not',
-  forfeit_points_winner: 'Forfeit: league points to the team that turned up',
-  forfeit_points_loser: 'Forfeit: league points to the team that did not',
-  double_forfeit_points: 'Double forfeit: points to each side',
+  bonus_touchdown_threshold: 'Bonus point at this many TDs scored (0 = off)',
+  bonus_touchdown_points: 'Points for that TD bonus',
+  bonus_shutout_points: 'Points for conceding no TDs',
+  bonus_casualty_threshold: 'Bonus point at this many casualties (0 = off)',
+  bonus_casualty_points: 'Points for that casualty bonus',
+  concession_score_winner: 'Concession: TDs to the coach who tried',
+  concession_score_loser: 'Concession: TDs to the coach who did not respond',
+  no_agreement_score: 'No agreement reached: TDs to each side',
   round_length_days: 'Default window length (days)',
   nag_days_before_close: 'Chase on these days before the deadline',
   closing_soon_days: 'Treat as closing soon within (days)',
@@ -441,8 +469,10 @@ async function loadSettings() {
         '<input data-key="' + key + '" value="' + esc(data.settings[key] === undefined ? '' : data.settings[key]) + '"></label>';
     }).join('') +
     '<button class="act primary" id="savesettings">Save settings</button>' +
-    '<p class="note">Auto-forfeit rules a double forfeit when a window expires with a game unplayed and no extension granted, ' +
-    'because at that point neither coach has shown it was the other one at fault. Re-rule it by hand if you learn otherwise.</p></div>';
+    '<p class="note">Auto-forfeit applies \u00a73.2(c) \u2014 a 0-0 draw \u2014 when a window expires with a game unplayed and ' +
+    'no extension granted, because telling (a) from (b) needs to know who actually reached out. Re-rule by hand once you know. ' +
+    'No ruling earns a \u00a72.4 bonus: left to the letter of the rules a 0-0 draw would pay the shutout bonus to both sides, ' +
+    'making it worth more to ignore a fixture than to turn up and lose.</p></div>';
 
   document.getElementById('savesettings').onclick = async function () {
     var updates = {};

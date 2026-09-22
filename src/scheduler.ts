@@ -159,11 +159,13 @@ export async function tick(env: Env, now = new Date()): Promise<TickReport> {
       });
 
       if (autoForfeit && blocking.length > 0) {
-        // Neither coach got the game played and neither asked for more time, so
-        // neither can be said to be at fault: a double forfeit, which an admin
-        // can convert to a one-sided forfeit in the portal once they know more.
+        // §3.2(c): the window expired with nobody having asked for more time and
+        // no evidence either coach tried, which is the "no attempt" outcome — a
+        // 0-0 draw. It is never (a) or (b), because deciding those needs to know
+        // who actually reached out, which only the Lord Commissioner can judge.
+        // Reversible in the portal once he knows more.
         for (const fixture of blocking) {
-          await ruleFixture(env, fixture.id, 'double_forfeit', 'both', 'Round window expired', 'cron');
+          await ruleFixture(env, fixture.id, 'no_attempt', null, 'Round window expired', 'cron');
           report.autoForfeited += 1;
         }
         await announceOnce(
@@ -171,7 +173,7 @@ export async function tick(env: Env, now = new Date()): Promise<TickReport> {
           `autoforfeit:${round.id}:${dayStamp(now)}`,
           'auto_forfeit',
           announceChannel,
-          `**Round ${round.number} — ${blocking.length} game${blocking.length === 1 ? '' : 's'} forfeited** ` +
+          `**Round ${round.number} — ${blocking.length} game${blocking.length === 1 ? '' : 's'} ruled 0-0** ` +
             `on the expiry of the window.\n` +
             blocking.map(describe).join('\n') +
             `\n\nIf that is wrong, tell an admin — it can be re-ruled.`,

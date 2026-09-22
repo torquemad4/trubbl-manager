@@ -8,17 +8,19 @@
 
 import { audit, nowIso, type SeasonRow } from './db.js';
 import { fetchEntrants, fetchSchedule, fetchTournament } from './tourplay.js';
+import { RULED_STATUSES } from './types.js';
 import type { Env } from './types.js';
 
-/** Statuses that a sync is not allowed to overwrite. */
-const RULED = new Set(['forfeit', 'concession', 'double_forfeit', 'void']);
+
 
 export interface SyncReport {
   seasonId: number;
   coaches: number;
   teams: number;
   rounds: number;
+  divisions: number;
   fixtures: number;
+  friendlies: number;
   newlyPlayed: number;
   pendingRegistrations: number;
   warnings: string[];
@@ -31,6 +33,29 @@ export async function syncSeason(env: Env, season: SeasonRow, actor = 'sync'): P
   const tournament = await fetchTournament(slug);
   const entrants = await fetchEntrants(slug);
   const schedule = await fetchSchedule(slug, season.tourplay_phase_id);
+
+  // --- divisions (§3.3) ----------------------------------------------------
+  // One TourPlay category per division. Tier comes from the order TourPlay
+  // lists them in, which is the order they were created: Premier first.
+  for (const [index, category] of tournament.categories.entries()) {
+    await env.DB.prepare(
+      `INSERT INTO division (season_id, name, tier, tourplay_category_id)
+         VALUES (?, ?, ?, ?)
+       ON CONFLICT (season_id, name) DO UPDATE SET tourplay_category_id = excluded.tourplay_category_id`,
+    )
+      .bind(season.id, category.name, index + 1, category.id)
+      .run();
+  }
+  const { results: divisionRows } = await env.DB.prepare(
+    'SELECT id, tourplay_category_id FROM division WHERE season_id = ?',
+  )
+    .bind(season.id)
+    .all<{ id: number; tourplay_category_id: number | null }>();
+  const divisionByCategory = new Map(
+    (divisionRows ?? [])
+      .filter((d) => d.tourplay_category_id !== null)
+      .map((d) => [d.tourplay_category_id as number, d.id]),
+  );
 
   // --- coaches and teams ---------------------------------------------------
   let coaches = 0;
@@ -58,15 +83,17 @@ export async function syncSeason(env: Env, season: SeasonRow, actor = 'sync'): P
       .bind(season.id, entrant.playerId)
       .first<{ id: number }>();
 
+    const divisionId = entrant.categoryId === null ? null : divisionByCategory.get(entrant.categoryId) ?? null;
     await env.DB.prepare(
-      `INSERT INTO team (season_id, coach_id, name, race, tourplay_roster_key)
-         VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO team (season_id, coach_id, name, race, tourplay_roster_key, division_id)
+         VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT (season_id, tourplay_roster_key) DO UPDATE SET
-         coach_id = excluded.coach_id,
-         name     = excluded.name,
-         race     = excluded.race`,
+         coach_id    = excluded.coach_id,
+         name        = excluded.name,
+         race        = excluded.race,
+         division_id = COALESCE(excluded.division_id, team.division_id)`,
     )
-      .bind(season.id, coach?.id ?? null, entrant.teamName, entrant.race, entrant.playerId)
+      .bind(season.id, coach?.id ?? null, entrant.teamName, entrant.race, entrant.playerId, divisionId)
       .run();
     teams += 1;
   }
@@ -91,18 +118,20 @@ export async function syncSeason(env: Env, season: SeasonRow, actor = 'sync'): P
   const roundIdByNumber = new Map((roundRows ?? []).map((r) => [r.number, r.id]));
 
   const { results: teamRows } = await env.DB.prepare(
-    'SELECT id, tourplay_roster_key FROM team WHERE season_id = ?',
+    'SELECT id, tourplay_roster_key, division_id FROM team WHERE season_id = ?',
   )
     .bind(season.id)
-    .all<{ id: number; tourplay_roster_key: string | null }>();
+    .all<{ id: number; tourplay_roster_key: string | null; division_id: number | null }>();
   const teamIdByPlayer = new Map(
     (teamRows ?? [])
       .filter((t) => t.tourplay_roster_key)
       .map((t) => [t.tourplay_roster_key as string, t.id]),
   );
+  const divisionByTeam = new Map((teamRows ?? []).map((t) => [t.id, t.division_id]));
 
   // --- fixtures ------------------------------------------------------------
   let fixtures = 0;
+  let friendlies = 0;
   let newlyPlayed = 0;
 
   for (const match of schedule.matches) {
@@ -124,6 +153,15 @@ export async function syncSeason(env: Env, season: SeasonRow, actor = 'sync'): P
       );
     }
 
+    // §3.3.2: a game between two divisions is a friendly and scores nothing.
+    const homeDivision = homeTeamId === null ? null : divisionByTeam.get(homeTeamId) ?? null;
+    const awayDivision = awayTeamId === null ? null : divisionByTeam.get(awayTeamId) ?? null;
+    const matchDivision =
+      match.categoryId !== null ? divisionByCategory.get(match.categoryId) ?? null : homeDivision;
+    const isFriendly =
+      homeDivision !== null && awayDivision !== null && homeDivision !== awayDivision;
+    if (isFriendly) friendlies += 1;
+
     const existing = await env.DB.prepare(
       'SELECT id, status, tp_played FROM fixture WHERE round_id = ? AND tourplay_match_id = ?',
     )
@@ -132,12 +170,15 @@ export async function syncSeason(env: Env, season: SeasonRow, actor = 'sync'): P
 
     if (!existing) {
       await env.DB.prepare(
-        `INSERT INTO fixture (round_id, tourplay_match_id, match_order, home_team_id, away_team_id,
+        `INSERT INTO fixture (round_id, division_id, is_friendly, tourplay_match_id, match_order,
+                              home_team_id, away_team_id,
                               tp_home_score, tp_away_score, tp_home_cas, tp_away_cas, tp_state, tp_played, status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
         .bind(
           roundId,
+          isFriendly ? null : matchDivision,
+          isFriendly ? 1 : 0,
           match.matchId,
           match.order,
           homeTeamId,
@@ -154,7 +195,7 @@ export async function syncSeason(env: Env, season: SeasonRow, actor = 'sync'): P
       if (match.played) newlyPlayed += 1;
     } else {
       // A ruled fixture keeps its status; only the mirror columns move.
-      const keepStatus = RULED.has(existing.status);
+      const keepStatus = RULED_STATUSES.has(existing.status);
       const nextStatus = keepStatus
         ? existing.status
         : match.played
@@ -167,13 +208,15 @@ export async function syncSeason(env: Env, season: SeasonRow, actor = 'sync'): P
 
       await env.DB.prepare(
         `UPDATE fixture SET
-           match_order = ?, home_team_id = ?, away_team_id = ?,
+           match_order = ?, division_id = ?, is_friendly = ?, home_team_id = ?, away_team_id = ?,
            tp_home_score = ?, tp_away_score = ?, tp_home_cas = ?, tp_away_cas = ?,
            tp_state = ?, tp_played = ?, status = ?
          WHERE id = ?`,
       )
         .bind(
           match.order,
+          isFriendly ? null : matchDivision,
+          isFriendly ? 1 : 0,
           homeTeamId,
           awayTeamId,
           match.home.score,
@@ -205,7 +248,9 @@ export async function syncSeason(env: Env, season: SeasonRow, actor = 'sync'): P
     coaches,
     teams,
     rounds: totalRounds,
+    divisions: tournament.categories.length,
     fixtures,
+    friendlies,
     newlyPlayed,
     pendingRegistrations,
     warnings,
