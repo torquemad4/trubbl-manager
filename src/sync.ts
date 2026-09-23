@@ -45,27 +45,34 @@ export async function syncSeason(env: Env, season: SeasonRow, actor = 'sync'): P
   }
 
   // --- divisions (§3.3) ----------------------------------------------------
-  // One TourPlay category per division. A single unnamed category means the
-  // season is not divided on TourPlay at all, so creating a "Division 1" out
-  // of it would invent structure that does not exist: leave it flat.
-  const modelsDivisions =
-    tournament.categories.length > 1 || tournament.categories.some((c) => c.name.trim() !== '');
+  // TourPlay models a division as a *group on a match*, not as a category, so
+  // divisions only become knowable once the draw exists. Categories look like
+  // the obvious home for them but are not: TRUBBL's seasons all use one.
+  // Divisions set up by hand in the portal before the draw are left alone.
+  const groups = new Map<number, string>();
+  for (const match of schedule?.matches ?? []) {
+    if (match.group) groups.set(match.group.id, match.group.name);
+  }
 
-  for (const [index, category] of (modelsDivisions ? tournament.categories : []).entries()) {
+  for (const [groupId, name] of [...groups.entries()].sort((a, b) => a[0] - b[0])) {
+    const tier = [...groups.keys()].sort((a, b) => a - b).indexOf(groupId) + 1;
     await env.DB.prepare(
       `INSERT INTO division (season_id, name, tier, tourplay_category_id)
          VALUES (?, ?, ?, ?)
-       ON CONFLICT (season_id, name) DO UPDATE SET tourplay_category_id = excluded.tourplay_category_id`,
+       ON CONFLICT (season_id, name) DO UPDATE SET
+         tourplay_category_id = excluded.tourplay_category_id,
+         tier                 = excluded.tier`,
     )
-      .bind(season.id, category.name.trim() || `Division ${index + 1}`, index + 1, category.id)
+      .bind(season.id, name || `Division ${tier}`, tier, groupId)
       .run();
   }
+
   const { results: divisionRows } = await env.DB.prepare(
     'SELECT id, tourplay_category_id FROM division WHERE season_id = ?',
   )
     .bind(season.id)
     .all<{ id: number; tourplay_category_id: number | null }>();
-  const divisionByCategory = new Map(
+  const divisionByGroup = new Map(
     (divisionRows ?? [])
       .filter((d) => d.tourplay_category_id !== null)
       .map((d) => [d.tourplay_category_id as number, d.id]),
@@ -99,17 +106,17 @@ export async function syncSeason(env: Env, season: SeasonRow, actor = 'sync'): P
       .bind(season.id, entrant.playerId)
       .first<{ id: number }>();
 
-    const divisionId = entrant.categoryId === null ? null : divisionByCategory.get(entrant.categoryId) ?? null;
+    // A team's division is learned from its fixtures, below — never from the
+    // inscription, and never overwriting one set by hand before the draw.
     await env.DB.prepare(
-      `INSERT INTO team (season_id, coach_id, name, race, tourplay_roster_key, division_id)
-         VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO team (season_id, coach_id, name, race, tourplay_roster_key)
+         VALUES (?, ?, ?, ?, ?)
        ON CONFLICT (season_id, tourplay_roster_key) DO UPDATE SET
-         coach_id    = excluded.coach_id,
-         name        = excluded.name,
-         race        = excluded.race,
-         division_id = COALESCE(excluded.division_id, team.division_id)`,
+         coach_id = excluded.coach_id,
+         name     = excluded.name,
+         race     = excluded.race`,
     )
-      .bind(season.id, coach?.id ?? null, entrant.teamName, entrant.race, entrant.playerId, divisionId)
+      .bind(season.id, coach?.id ?? null, entrant.teamName, entrant.race, entrant.playerId)
       .run();
     teams += 1;
   }
@@ -169,14 +176,26 @@ export async function syncSeason(env: Env, season: SeasonRow, actor = 'sync'): P
       );
     }
 
-    // §3.3.2: a game between two divisions is a friendly and scores nothing.
+    const matchDivision = match.group ? divisionByGroup.get(match.group.id) ?? null : null;
+
+    // §3.3.2: a game between teams from two divisions is a friendly. With the
+    // division on the match itself, that is a game whose two sides already
+    // belong to different divisions from their league fixtures.
     const homeDivision = homeTeamId === null ? null : divisionByTeam.get(homeTeamId) ?? null;
     const awayDivision = awayTeamId === null ? null : divisionByTeam.get(awayTeamId) ?? null;
-    const matchDivision =
-      match.categoryId !== null ? divisionByCategory.get(match.categoryId) ?? null : homeDivision;
     const isFriendly =
-      homeDivision !== null && awayDivision !== null && homeDivision !== awayDivision;
+      matchDivision === null && homeDivision !== null && awayDivision !== null && homeDivision !== awayDivision;
     if (isFriendly) friendlies += 1;
+
+    // Learn each team's division from the league fixture it appears in.
+    if (matchDivision !== null) {
+      for (const teamId of [homeTeamId, awayTeamId]) {
+        if (teamId !== null && divisionByTeam.get(teamId) !== matchDivision) {
+          await env.DB.prepare('UPDATE team SET division_id = ? WHERE id = ?').bind(matchDivision, teamId).run();
+          divisionByTeam.set(teamId, matchDivision);
+        }
+      }
+    }
 
     const existing = await env.DB.prepare(
       'SELECT id, status, tp_played FROM fixture WHERE round_id = ? AND tourplay_match_id = ?',
@@ -271,7 +290,7 @@ export async function syncSeason(env: Env, season: SeasonRow, actor = 'sync'): P
     coaches,
     teams,
     rounds: totalRounds,
-    divisions: modelsDivisions ? tournament.categories.length : 0,
+    divisions: groups.size,
     fixtures,
     friendlies,
     newlyPlayed,

@@ -184,9 +184,15 @@ export interface TourplaySide {
   casualties: number | null;
 }
 
+export interface TourplayGroup {
+  id: number;
+  name: string;
+}
+
 export interface TourplayMatch {
   matchId: string | null;
-  categoryId: number | null;
+  /** TourPlay models a division as a group on the match (§3.3). */
+  group: TourplayGroup | null;
   round: number;
   order: number;
   state: number | null;
@@ -219,47 +225,82 @@ export interface TourplaySchedule {
  * phase with its round number, so one call covers all rounds — which is what a
  * league needs, as against the single live round a tournament day needs.
  */
+/**
+ * The whole season's fixture list.
+ *
+ * `phases?phaseId=` returns only the current round — 12 matches, not the 84 a
+ * three-division season actually has — so every round has to be fetched by
+ * number. The phase's `rounds` array says how many there are.
+ */
 export async function fetchSchedule(slug: string, phaseIdHint?: number | null): Promise<TourplaySchedule> {
-  const status = await getJson<Record<string, unknown>>(`api/tournament/${slug}/phase-status`, slug);
+  const status = await getJson<Record<string, any>>(`api/tournament/${slug}/phase-status`, slug);
   const phaseIds = Object.keys(status).map(Number).filter((n) => Number.isFinite(n));
   if (phaseIds.length === 0) {
     throw new TourplayError('That season has no fixtures drawn on TourPlay yet, so there is nothing to import');
   }
-  // Prefer the phase we already synced; otherwise the most recent one.
-  const phaseId =
-    phaseIdHint && phaseIds.includes(phaseIdHint) ? phaseIdHint : phaseIds[phaseIds.length - 1]!;
 
-  const phases = await getJson<any>(`api/tournament/${slug}/phases?phaseId=${phaseId}`, slug);
-  const rawMatches: any[] = phases?.matches ?? [];
-  const currentRound = Number(phases?.currentRound ?? 0) || 0;
+  // A season with play-offs has several phases. The league is the one with the
+  // most rounds; the knockouts that follow are single-round phases and would
+  // otherwise be mistaken for the league simply by coming last.
+  const leaguePhase =
+    phaseIdHint && phaseIds.includes(phaseIdHint)
+      ? phaseIdHint
+      : phaseIds.reduce((best, id) =>
+          Number(status[String(id)]?.lastRound ?? 0) > Number(status[String(best)]?.lastRound ?? 0) ? id : best,
+        phaseIds[0]!);
 
-  const matches: TourplayMatch[] = rawMatches.map((m) => {
-    const score = m?.scoreResume ?? {};
-    const homeScore = numberOrNull(score.totalScoreLocal);
-    const awayScore = numberOrNull(score.totalScoreVisitor);
-    const state = numberOrNull(m?.state);
-    return {
-      matchId: m?.matchId === undefined || m?.matchId === null ? null : String(m.matchId),
-      categoryId: typeof m?.categoryId === 'number' ? m.categoryId : null,
-      round: Number(m?.round ?? currentRound) || 0,
-      order: Number(m?.order ?? 0) || 0,
-      state,
-      // TourPlay has no single "is finished" flag we can rely on, so treat a
-      // match as played once it carries a score for both sides.
-      played: homeScore !== null && awayScore !== null,
-      home: side(m?.rosterLocal, homeScore, numberOrNull(score.casualtiesLocal)),
-      away: side(m?.rosterVisitor, awayScore, numberOrNull(score.casualtiesVisitor)),
-    };
-  });
-
-  const declaredRounds = (phases?.rounds ?? [])
+  const first = await getJson<any>(`api/tournament/${slug}/phases?phaseId=${leaguePhase}`, slug);
+  const currentRound = Number(first?.currentRound ?? 0) || 0;
+  const declared = (first?.rounds ?? [])
     .map((r: any) => Number(r?.roundNumber))
     .filter((n: number) => Number.isFinite(n));
-  const totalRounds = declaredRounds.length
-    ? Math.max(...declaredRounds)
-    : matches.reduce((max, m) => Math.max(max, m.round), 0);
+  const totalRounds = declared.length ? Math.max(...declared) : currentRound;
 
-  return { phaseId, currentRound, totalRounds, matches };
+  const matches: TourplayMatch[] = [];
+  const seen = new Set<string>();
+
+  const absorb = (payload: any) => {
+    for (const raw of payload?.matches ?? []) {
+      const parsed = parseMatch(raw, currentRound);
+      const key = parsed.matchId ?? `${parsed.round}:${parsed.order}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      matches.push(parsed);
+    }
+  };
+
+  absorb(first);
+  for (let round = 1; round <= totalRounds; round += 1) {
+    try {
+      absorb(await getJson<any>(`api/tournament/${slug}/phases?phaseId=${leaguePhase}&round=${round}`, slug));
+    } catch {
+      // One unreadable round should not lose the rest of the season.
+    }
+  }
+
+  return { phaseId: leaguePhase, currentRound, totalRounds, matches };
+}
+
+function parseMatch(m: any, currentRound: number): TourplayMatch {
+  const score = m?.scoreResume ?? {};
+  const homeScore = numberOrNull(score.totalScoreLocal);
+  const awayScore = numberOrNull(score.totalScoreVisitor);
+  const rawGroup = m?.group;
+  return {
+    matchId: m?.matchId === undefined || m?.matchId === null ? null : String(m.matchId),
+    group:
+      rawGroup && typeof rawGroup.id === 'number'
+        ? { id: rawGroup.id, name: String(rawGroup.name ?? '').trim() }
+        : null,
+    round: Number(m?.round ?? currentRound) || 0,
+    order: Number(m?.order ?? 0) || 0,
+    state: numberOrNull(m?.state),
+    // TourPlay has no single "is finished" flag we can rely on, so treat a
+    // match as played once it carries a score for both sides.
+    played: homeScore !== null && awayScore !== null,
+    home: side(m?.rosterLocal, homeScore, numberOrNull(score.casualtiesLocal)),
+    away: side(m?.rosterVisitor, awayScore, numberOrNull(score.casualtiesVisitor)),
+  };
 }
 
 function numberOrNull(value: unknown): number | null {
