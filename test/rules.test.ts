@@ -6,12 +6,68 @@ import {
   DEFAULT_SCORING,
   daysBetween,
   dueNags,
+  followOnWindows,
   parseNagDays,
   windowState,
   type StandingsFixture,
 } from '../src/rules.js';
 
 const at = (iso: string) => new Date(iso);
+
+describe('follow-on windows for rounds drawn mid-season', () => {
+  const dated = (number: number, opens_at: string, closes_at: string) => ({ number, opens_at, closes_at });
+  const undated = (number: number) => ({ number, opens_at: null, closes_at: null });
+
+  it('gives a newly drawn round a fortnight on from the previous close', () => {
+    const rounds = [
+      dated(1, '2026-09-28T00:00:00Z', '2026-10-18T23:59:59Z'),
+      dated(2, '2026-10-19T00:00:00Z', '2026-11-01T23:59:59Z'),
+      undated(3),
+    ];
+    expect(followOnWindows(rounds, 14)).toEqual([
+      { round: rounds[2], opens_at: '2026-11-02T00:00:00Z', closes_at: '2026-11-15T23:59:59Z' },
+    ]);
+  });
+
+  it('chains several new rounds in order, whatever order they were given in', () => {
+    const rounds = [undated(4), undated(3), dated(2, '2026-10-19T00:00:00Z', '2026-11-01T23:59:59Z')];
+    expect(followOnWindows(rounds, 14).map((w) => [w.round.number, w.opens_at, w.closes_at])).toEqual([
+      [3, '2026-11-02T00:00:00Z', '2026-11-15T23:59:59Z'],
+      [4, '2026-11-16T00:00:00Z', '2026-11-29T23:59:59Z'],
+    ]);
+  });
+
+  it('never invents round one', () => {
+    expect(followOnWindows([undated(1), undated(2)], 14)).toEqual([]);
+  });
+
+  it('never touches a round that already has dates', () => {
+    const rounds = [
+      dated(1, '2026-09-28T00:00:00Z', '2026-10-18T23:59:59Z'),
+      dated(2, '2026-10-26T00:00:00Z', '2026-11-08T23:59:59Z'), // moved by hand
+      undated(3),
+    ];
+    const result = followOnWindows(rounds, 14);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.round.number).toBe(3);
+    expect(result[0]!.opens_at).toBe('2026-11-09T00:00:00Z');
+  });
+
+  it('stops at a round with an open date but no close, since there is nothing to run on from', () => {
+    const rounds = [
+      dated(1, '2026-09-28T00:00:00Z', '2026-10-18T23:59:59Z'),
+      { number: 2, opens_at: '2026-10-19T00:00:00Z', closes_at: null },
+      undated(3),
+    ];
+    expect(followOnWindows(rounds, 14)).toEqual([]);
+  });
+
+  it('does nothing with a nonsense length', () => {
+    const rounds = [dated(1, '2026-09-28T00:00:00Z', '2026-10-18T23:59:59Z'), undated(2)];
+    expect(followOnWindows(rounds, 0)).toEqual([]);
+    expect(followOnWindows(rounds, Number.NaN)).toEqual([]);
+  });
+});
 
 describe('round windows (§3.2)', () => {
   it('is not open before the opening date', () => {

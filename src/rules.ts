@@ -94,6 +94,62 @@ export function windowState(
   };
 }
 
+export interface WindowedRound {
+  number: number;
+  opens_at: string | null;
+  closes_at: string | null;
+}
+
+export interface FollowOnWindow<T extends WindowedRound> {
+  round: T;
+  opens_at: string;
+  closes_at: string;
+}
+
+function isoSeconds(ms: number): string {
+  return new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+/**
+ * Windows for rounds drawn after the season was laid out. TourPlay draws a
+ * round at a time, so a round can turn up mid-season with no dates; rather
+ * than the layout being re-run by hand after every draw, each dateless round
+ * runs on from the one before it: it opens the second after that round closes
+ * and lasts `lengthDays`. Several new rounds chain in order.
+ *
+ * Nothing already dated is touched, and round one is never invented here: it
+ * has nothing to follow, and the season start is a decision, not a default.
+ * A round with an open date but no close breaks the chain, since there is no
+ * close to run on from.
+ */
+export function followOnWindows<T extends WindowedRound>(
+  rounds: T[],
+  lengthDays: number,
+): FollowOnWindow<T>[] {
+  const assigned: FollowOnWindow<T>[] = [];
+  if (!Number.isFinite(lengthDays) || lengthDays < 1) return assigned;
+
+  let previousClose: number | null = null;
+  for (const round of [...rounds].sort((a, b) => a.number - b.number)) {
+    if (round.closes_at) {
+      previousClose = Date.parse(round.closes_at);
+      if (Number.isNaN(previousClose)) previousClose = null;
+      continue;
+    }
+    if (round.opens_at || previousClose === null) {
+      previousClose = null;
+      continue;
+    }
+    // The previous round closes at hh:mm:59, so the next one opens on the
+    // following whole second — midnight, for a window laid out normally.
+    const opens = Math.ceil((previousClose + 1) / 1000) * 1000;
+    const closes = opens + lengthDays * DAY_MS - 1000;
+    assigned.push({ round, opens_at: isoSeconds(opens), closes_at: isoSeconds(closes) });
+    previousClose = closes;
+  }
+  return assigned;
+}
+
 /** A fixture still needing action from its coaches. */
 export function isOutstanding(status: FixtureStatus): boolean {
   return status === 'unplayed' || status === 'scheduled';

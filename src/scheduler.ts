@@ -18,13 +18,15 @@ import {
   type FixtureView,
   type RoundRow,
 } from './league.js';
-import { windowState } from './rules.js';
+import { followOnWindows, windowState } from './rules.js';
 import { recordSyncFailure, syncSeason } from './sync.js';
 import type { Env } from './types.js';
 
 export interface TickReport {
   synced: boolean;
   syncError: string | null;
+  /** Rounds that arrived without dates and were given a window running on from the round before. */
+  windowsAdded: number[];
   opened: number[];
   closed: number[];
   settled: number[];
@@ -86,6 +88,7 @@ export async function tick(env: Env, now = new Date()): Promise<TickReport> {
   const report: TickReport = {
     synced: false,
     syncError: null,
+    windowsAdded: [],
     opened: [],
     closed: [],
     settled: [],
@@ -119,6 +122,29 @@ export async function tick(env: Env, now = new Date()): Promise<TickReport> {
   const autoForfeit = (map['auto_forfeit_on_close'] ?? 'false') === 'true';
 
   const divisions = new Map((await divisionsFor(env, season.id)).map((d) => [d.id, d]));
+
+  // 1b. A round drawn on TourPlay since the windows were laid out has just
+  //     been created by the sync with no dates. Give it a window running on
+  //     from the round before, so a mid-season draw never needs the layout
+  //     re-run by hand. Round one is left alone: the season start is a decision.
+  const roundLength = Number(map['round_length_days'] ?? 14) || 14;
+  const followOn = followOnWindows(await roundsFor(env, season.id), roundLength);
+  if (followOn.length > 0) {
+    await env.DB.batch(
+      followOn.map(({ round, opens_at, closes_at }) =>
+        env.DB.prepare('UPDATE round SET opens_at = ?, closes_at = ? WHERE id = ?').bind(
+          opens_at,
+          closes_at,
+          round.id,
+        ),
+      ),
+    );
+    report.windowsAdded = followOn.map(({ round }) => round.number);
+    await audit(env, 'cron', 'season.follow_on_windows', `season:${season.id}`, {
+      lengthDays: roundLength,
+      rounds: followOn.map(({ round, opens_at, closes_at }) => ({ number: round.number, opens_at, closes_at })),
+    });
+  }
 
   for (const round of await roundsFor(env, season.id)) {
     // 2. Open a round whose start date has arrived.

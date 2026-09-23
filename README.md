@@ -10,7 +10,10 @@ point at that document.
 ## What it does
 
 - **Round windows.** Every round gets an open and close date. Lay a whole
-  season out from one start date, then adjust individual rounds.
+  season out from one start date, then adjust individual rounds. A round drawn
+  on TourPlay after that arrives without dates, and the cron gives it a window
+  running on from the round before (`round_length_days`), so a mid-season draw
+  never needs the layout re-run. Round one is never invented that way.
 - **Chasing.** On a cron it posts the outstanding-games list to Discord at
   configurable intervals before the deadline (7, 3 and 1 days by default), then
   daily once a round is overdue, naming the coaches.
