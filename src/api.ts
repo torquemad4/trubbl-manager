@@ -146,8 +146,17 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
     if (!season) return json({ error: 'no active season' }, 400);
     const length = Number(body.lengthDays);
     if (!Number.isFinite(length) || length < 1) return json({ error: 'lengthDays must be a positive number' }, 400);
-    const count = await layOutWindows(env, season.id, String(body.firstOpensAt ?? ''), length, actor);
-    return json({ rounds: count });
+    const map = await settings(env);
+    const firstRound = Number(body.firstRoundDays ?? map['first_round_length_days'] ?? length);
+    const count = await layOutWindows(
+      env,
+      season.id,
+      String(body.firstOpensAt ?? ''),
+      length,
+      actor,
+      Number.isFinite(firstRound) && firstRound > 0 ? firstRound : length,
+    );
+    return json({ rounds: count, firstRoundDays: firstRound });
   }
 
   // --- fixtures ------------------------------------------------------------

@@ -111,6 +111,8 @@ export async function tick(env: Env, now = new Date()): Promise<TickReport> {
   const announceChannel = map['announce_channel_id'] ?? '';
   const chaseChannel = map['chase_channel_id'] || announceChannel;
   const nagDays = nagDaysFrom(map);
+  const datesChannel = map['dates_channel_id'] ?? '';
+  const datesReminderDays = Number(map['dates_reminder_days'] ?? 4);
   const closingSoon = Number(map['closing_soon_days'] ?? 3) || 3;
   const autoForfeit = (map['auto_forfeit_on_close'] ?? 'false') === 'true';
 
@@ -126,6 +128,22 @@ export async function tick(env: Env, now = new Date()): Promise<TickReport> {
       report.opened.push(round.number);
 
       const fixtures = await fixturesForRound(env, round.id);
+
+      // The dates channel is the standing record of when each round runs.
+      if (datesChannel) {
+        await announceOnce(
+          env,
+          `dates-open:${round.id}`,
+          'dates_round_open',
+          datesChannel,
+          `**Round ${round.number}** is open.\n` +
+            (round.opens_at ? `Opens ${formatDate(round.opens_at)}\n` : '') +
+            (round.closes_at ? `**Closes ${formatDate(round.closes_at)}**\n` : '') +
+            `\n${fixtures.length} fixture${fixtures.length === 1 ? '' : 's'} to play. ` +
+            `Report your results on TourPlay as soon as you have played.`,
+        );
+      }
+
       await announceOnce(
         env,
         `round-open:${round.id}`,
@@ -163,6 +181,28 @@ export async function tick(env: Env, now = new Date()): Promise<TickReport> {
           await markChased(env, group, view.daysRemaining <= 1 ? 'chased' : 'nudged');
         }
       }
+    }
+
+    // 3b. A single reminder in the dates channel a few days out, naming the
+    //     coaches on both sides of every game still unreported.
+    if (datesChannel && view.daysRemaining === datesReminderDays && left.length > 0) {
+      const coaches = new Set<string>();
+      for (const fixture of left) {
+        coaches.add(mention(fixture.homeDiscordId, fixture.homeCoach));
+        coaches.add(mention(fixture.awayDiscordId, fixture.awayCoach));
+      }
+      const result = await announceOnce(
+        env,
+        `dates-reminder:${round.id}`,
+        'dates_reminder',
+        datesChannel,
+        `**Round ${round.number} closes in ${datesReminderDays} days.**\n` +
+          `${left.length} game${left.length === 1 ? '' : 's'} not yet reported:\n` +
+          left.map(describe).join('\n') +
+          `\n\n${[...coaches].join(' ')} — please get these played and reported, ` +
+          `or let me know if you need longer.`,
+      );
+      if (!result.skipped) report.nagged.push(`dates-reminder:${round.id}`);
     }
 
     // 4. Past the deadline: chase daily, but leave alone anyone holding a
@@ -284,15 +324,18 @@ export async function layOutWindows(
   firstOpensAt: string,
   lengthDays: number,
   actor: string,
+  firstRoundDays?: number,
 ): Promise<number> {
   const rounds = await roundsFor(env, seasonId);
   let cursor = Date.parse(firstOpensAt);
   if (Number.isNaN(cursor)) throw new Error('The start date is not a valid date');
 
-  const statements = rounds.map((round) => {
+  const statements = rounds.map((round, index) => {
+    // The opening round usually runs longer: teams are still being drafted.
+    const days = index === 0 ? firstRoundDays ?? lengthDays : lengthDays;
     const opens = new Date(cursor);
-    const closes = new Date(cursor + lengthDays * DAY_MS - 1);
-    cursor += lengthDays * DAY_MS;
+    const closes = new Date(cursor + days * DAY_MS - 1);
+    cursor += days * DAY_MS;
     return env.DB.prepare('UPDATE round SET opens_at = ?, closes_at = ? WHERE id = ?').bind(
       opens.toISOString().replace(/\.\d{3}Z$/, 'Z'),
       closes.toISOString().replace(/\.\d{3}Z$/, 'Z'),
@@ -301,7 +344,11 @@ export async function layOutWindows(
   });
 
   if (statements.length > 0) await env.DB.batch(statements);
-  await audit(env, actor, 'season.layout_windows', `season:${seasonId}`, { firstOpensAt, lengthDays });
+  await audit(env, actor, 'season.layout_windows', `season:${seasonId}`, {
+    firstOpensAt,
+    lengthDays,
+    firstRoundDays: firstRoundDays ?? lengthDays,
+  });
   return statements.length;
 }
 

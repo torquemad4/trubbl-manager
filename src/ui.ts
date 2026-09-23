@@ -293,9 +293,11 @@ async function loadRounds() {
   var el = document.getElementById('tab-rounds');
   var html = '<div class="card"><h2>Lay out every window</h2><div class="row">' +
     '<label>First round opens<input type="date" id="firstopens"></label>' +
-    '<label>Window length (days)<input type="number" id="wlen" value="21" min="1"></label>' +
+    '<label>Window length (days)<input type="number" id="wlen" value="14" min="1"></label>' +
+    '<label>First round (days)<input type="number" id="wfirst" value="21" min="1"></label>' +
     '<button class="act primary" id="layout">Apply to all rounds</button></div>' +
-    '<p class="note">This overwrites every round window back to back. Individual dates can be changed below afterwards.</p></div>';
+    '<p class="note">This overwrites every round window back to back. The first round can run longer to let ' +
+    'people get set up. Individual dates can be changed below afterwards.</p></div>';
 
   html += '<div class="card"><h2>Rounds</h2><table><thead><tr><th>#</th><th>Opens</th><th>Closes</th>' +
     '<th>Status</th><th>Games</th><th></th></tr></thead><tbody>' +
@@ -317,8 +319,12 @@ async function loadRounds() {
     try {
       var first = document.getElementById('firstopens').value;
       if (!first) return toast('Pick a start date first.');
-      var r = await post('/api/windows/layout', { firstOpensAt: first, lengthDays: Number(document.getElementById('wlen').value) });
-      toast('Laid out ' + r.rounds + ' windows.');
+      var r = await post('/api/windows/layout', {
+        firstOpensAt: first,
+        lengthDays: Number(document.getElementById('wlen').value),
+        firstRoundDays: Number(document.getElementById('wfirst').value)
+      });
+      toast('Laid out ' + r.rounds + ' windows, first round ' + r.firstRoundDays + ' days.');
       load('rounds');
     } catch (error) { toast(error.message); }
   };
@@ -506,7 +512,10 @@ var SETTING_LABELS = {
   concession_score_winner: 'Concession: TDs to the coach who tried',
   concession_score_loser: 'Concession: TDs to the coach who did not respond',
   no_agreement_score: 'No agreement reached: TDs to each side',
-  round_length_days: 'Default window length (days)',
+  round_length_days: 'Window length (days)',
+  first_round_length_days: 'First round window length (days)',
+  dates_channel_id: 'Discord: season dates channel id',
+  dates_reminder_days: 'Dates channel reminder, days before close',
   nag_days_before_close: 'Chase on these days before the deadline',
   closing_soon_days: 'Treat as closing soon within (days)',
   auto_forfeit_on_close: 'Auto-forfeit when a window expires (true/false)',
