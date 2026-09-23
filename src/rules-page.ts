@@ -61,6 +61,14 @@ ol.tiebreak li::before {
   border: 1px solid var(--line); border-radius: 50%;
 }
 
+dl.cmds { margin: 0 0 22px; }
+dl.cmds dt {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14.5px;
+  color: var(--accent); margin-top: 16px; word-break: break-word;
+}
+dl.cmds dd { margin: 4px 0 0; }
+dl.cmds dd .when { display: block; color: var(--muted); font-size: 14px; margin-top: 3px; }
+
 dl.outcomes { margin: 0 0 16px; }
 dl.outcomes dt { font-weight: 600; margin-top: 12px; }
 dl.outcomes dd { margin: 3px 0 0; color: var(--muted); }
@@ -281,6 +289,61 @@ const BODY = String.raw`
 
 <h3 class="clause" id="s3-4-5"><span class="num">3.4.5</span> Drafting a New Team <a class="link" href="#s3-4-5">#</a></h3>
 <p>A returning coach may choose not to re-draft, and instead create a brand new team for the next season. If they do, they may choose whether to remain in the division their previous team ended up in, or to move to the Third Division. Coaches in lower divisions will be promoted to fill the gaps. Newly drafted teams for all divisions will receive 1,000,000 GC as their initial team budget.</p>
+
+<h2 class="part" id="s4"><span class="num">4</span> The Commish-Bot</h2>
+<p><b>commish-bot</b> runs the day-to-day admin of the league inside Discord. It posts round deadlines, chases games that have not been played, and will answer a handful of questions about where the season stands.</p>
+<p>Everything it does for you is a subcommand of <code>/trubbl</code>. Type <code>/trubbl</code> in any channel the bot can see and Discord will offer you the list.</p>
+
+<h3 class="clause" id="s4-1"><span class="num">4.1</span> Asking the bot something <a class="link" href="#s4-1">#</a></h3>
+<p>These three reply <b>in the channel</b>, so everyone can see the answer. Use them wherever it is useful for other people to see it too.</p>
+<dl class="cmds">
+  <dt>/trubbl status</dt>
+  <dd>Where the current round stands: its deadline, how many days are left, how many games are in and how many are still to play.
+    <span class="when">Use it when you have lost track of where the season is &ndash; which is most of us, most of the time.</span></dd>
+  <dt>/trubbl table</dt>
+  <dd>The standings for all three divisions, with wins / draws / losses, net TD, net CAS and bonus points.
+    <span class="when">Use it to settle an argument about who is actually winning.</span></dd>
+  <dt>/trubbl outstanding</dt>
+  <dd>Every game still to play this round, with both coaches tagged.
+    <span class="when">Use it to see who the league is waiting on &ndash; including, occasionally, you.</span></dd>
+</dl>
+
+<h3 class="clause" id="s4-2"><span class="num">4.2</span> Telling the bot something <a class="link" href="#s4-2">#</a></h3>
+<p>These reply <b>only to you</b>, so you can run them anywhere without cluttering a channel.</p>
+<dl class="cmds">
+  <dt>/trubbl link naf:&lt;your NAF number&gt;</dt>
+  <dd>Ties your Discord account to your TourPlay coach record. If you have no NAF number, use <code>name:</code> and your TourPlay coach name instead.
+    <span class="when">Once, at the start of the season, before anything else. Until you have linked, the bot does not know which coach you are, so <code>mygame</code>, <code>schedule</code> and <code>extend</code> cannot help you. If you voted in the sign-up poll you are probably already linked &ndash; run <code>/trubbl mygame</code> and see.</span></dd>
+  <dt>/trubbl mygame</dt>
+  <dd>Your fixture this round, who you are playing, and the date it has to be done by.
+    <span class="when">Any time you cannot remember who you owe a game to.</span></dd>
+  <dt>/trubbl schedule when:&lt;YYYY-MM-DD&gt;</dt>
+  <dd>Records the date you and your opponent have agreed. Add a time if you like: <code>2026-10-14 19:00</code>.
+    <span class="when">As soon as you have agreed a date. This is a note for the league, not a booking &ndash; but it tells the Lord Commissioner the game is in hand, and it stops the bot chasing you as though nothing were happening.</span></dd>
+  <dt>/trubbl extend days:&lt;1&ndash;28&gt; reason:&lt;why&gt;</dt>
+  <dd>Asks for more time on your fixture. The request goes to the Lord Commissioner, who approves or refuses it; the deadline does not move until he does.
+    <span class="when">As soon as you know you are going to miss the window &ndash; not the night before it closes. Nobody minds an extension asked for early. See <a href="#s3-2">&sect;3.2</a>.</span></dd>
+</dl>
+
+<h3 class="clause" id="s4-3"><span class="num">4.3</span> Lord Commissioner only <a class="link" href="#s4-3">#</a></h3>
+<dl class="cmds">
+  <dt>/trubbl forfeit match:&lt;fixture id&gt; outcome:&lt;a, b or c&gt; side:&lt;home or away&gt;</dt>
+  <dd>Applies one of the three <a href="#s3-2">&sect;3.2</a> outcomes to a game that never got played. <code>side</code> is only needed for outcome (a), to say which coach did not respond.
+    <span class="when">Restricted to the Commissioner roles &ndash; anyone else who tries is politely refused. Every ruling is posted to #league-announcements, so nothing gets decided quietly.</span></dd>
+</dl>
+
+<h3 class="clause" id="s4-4"><span class="num">4.4</span> What the bot does on its own <a class="link" href="#s4-4">#</a></h3>
+<p>You do not have to ask for any of this &ndash; it happens whether you want it or not:</p>
+<ul>
+  <li><b>When a round opens</b> &ndash; a post in <b>#season-7-dates</b> with the round number and the date it closes.</li>
+  <li><b>Seven days before a round closes, and again with one day left</b> &ndash; a post in your division's games-setup channel listing the games still to play, tagging both coaches.</li>
+  <li><b>Once the deadline has passed</b> &ndash; a daily post in the same channel naming what is still outstanding, until it is played or ruled on.</li>
+  <li><b>When a game is ruled on</b> under <a href="#s3-2">&sect;3.2</a> &ndash; the ruling is posted in <b>#league-announcements</b>.</li>
+</ul>
+<div class="callout">
+  <p class="shout">If the bot chases you for a game you have already played</p>
+  <p>The result has not reached TourPlay. The bot reads TourPlay rather than taking anyone's word for it, so a game is only played once it is entered. Put the result in and the chasing stops.</p>
+</div>
 `;
 
 const TOC = String.raw`
@@ -313,6 +376,14 @@ const TOC = String.raw`
       <li><a href="#s3-4-3">3.4.3 Play-offs</a></li>
       <li><a href="#s3-4-4">3.4.4 Re-Draft</a></li>
       <li><a href="#s3-4-5">3.4.5 Drafting a New Team</a></li>
+    </ol>
+  </li>
+  <li><a class="top" href="#s4">4 &middot; The Commish-Bot</a>
+    <ol>
+      <li><a href="#s4-1">4.1 Asking the bot something</a></li>
+      <li><a href="#s4-2">4.2 Telling the bot something</a></li>
+      <li><a href="#s4-3">4.3 Lord Commissioner only</a></li>
+      <li><a href="#s4-4">4.4 What it does on its own</a></li>
     </ol>
   </li>
 </ol>
