@@ -112,7 +112,9 @@ export async function tick(env: Env, now = new Date()): Promise<TickReport> {
   const chaseChannel = map['chase_channel_id'] || announceChannel;
   const nagDays = nagDaysFrom(map);
   const datesChannel = map['dates_channel_id'] ?? '';
-  const datesReminderDays = Number(map['dates_reminder_days'] ?? 4);
+  // 0 or blank switches the dates-channel reminder off; the round-open post
+  // in that channel is unaffected.
+  const datesReminderDays = Number(map['dates_reminder_days'] ?? 0);
   const closingSoon = Number(map['closing_soon_days'] ?? 3) || 3;
   const autoForfeit = (map['auto_forfeit_on_close'] ?? 'false') === 'true';
 
@@ -185,7 +187,12 @@ export async function tick(env: Env, now = new Date()): Promise<TickReport> {
 
     // 3b. A single reminder in the dates channel a few days out, naming the
     //     coaches on both sides of every game still unreported.
-    if (datesChannel && view.daysRemaining === datesReminderDays && left.length > 0) {
+    if (
+      datesChannel &&
+      datesReminderDays > 0 &&
+      view.daysRemaining === datesReminderDays &&
+      left.length > 0
+    ) {
       const coaches = new Set<string>();
       for (const fixture of left) {
         coaches.add(mention(fixture.homeDiscordId, fixture.homeCoach));
