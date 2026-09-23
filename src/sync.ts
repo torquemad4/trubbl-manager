@@ -121,14 +121,26 @@ export async function syncSeason(env: Env, season: SeasonRow, actor = 'sync'): P
     // A team's division is learned from its fixtures, below — never from the
     // inscription, and never overwriting one set by hand before the draw.
     await env.DB.prepare(
-      `INSERT INTO team (season_id, coach_id, name, race, tourplay_roster_key)
-         VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO team (season_id, coach_id, name, race, tourplay_roster_key, name_provisional)
+         VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT (season_id, tourplay_roster_key) DO UPDATE SET
          coach_id = excluded.coach_id,
-         name     = excluded.name,
-         race     = excluded.race`,
+         -- A hidden roster gives only a short code. Once a real name is known,
+         -- a later hidden-roster import must not overwrite it.
+         name = CASE WHEN excluded.name_provisional = 1 AND team.name_provisional = 0
+                     THEN team.name ELSE excluded.name END,
+         race = CASE WHEN excluded.race = '' THEN team.race ELSE excluded.race END,
+         name_provisional = CASE WHEN excluded.name_provisional = 1 AND team.name_provisional = 0
+                                 THEN 0 ELSE excluded.name_provisional END`,
     )
-      .bind(season.id, coach?.id ?? null, entrant.teamName, entrant.race, entrant.playerId)
+      .bind(
+        season.id,
+        coach?.id ?? null,
+        entrant.teamName,
+        entrant.race,
+        entrant.playerId,
+        entrant.rosterHidden ? 1 : 0,
+      )
       .run();
     teams += 1;
   }

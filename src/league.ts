@@ -26,6 +26,9 @@ export interface FixtureView {
   awayTeamId: number | null;
   homeTeam: string;
   awayTeam: string;
+  /** True while TourPlay is still hiding the roster, so the name is a short code. */
+  homeTeamProvisional: boolean;
+  awayTeamProvisional: boolean;
   homeCoach: string;
   awayCoach: string;
   homeDiscordId: string | null;
@@ -54,6 +57,8 @@ const FIXTURE_SELECT = `
          f.division_id, d.name AS division_name,
          f.home_team_id, f.away_team_id,
          ht.name AS home_team, at.name AS away_team,
+         ht.name_provisional AS home_team_provisional,
+         at.name_provisional AS away_team_provisional,
          hc.display_name AS home_coach, ac.display_name AS away_coach,
          hc.discord_user_id AS home_discord, ac.discord_user_id AS away_discord,
          f.tp_home_score, f.tp_away_score, f.tp_home_cas, f.tp_away_cas,
@@ -86,6 +91,8 @@ function toView(row: any): FixtureView {
     awayTeamId: row.away_team_id,
     homeTeam: row.home_team ?? 'TBC',
     awayTeam: row.away_team ?? 'TBC',
+    homeTeamProvisional: row.home_team_provisional === 1,
+    awayTeamProvisional: row.away_team_provisional === 1,
     homeCoach: row.home_coach ?? '',
     awayCoach: row.away_coach ?? '',
     homeDiscordId: row.home_discord ?? null,
@@ -213,13 +220,20 @@ export async function standingsFor(env: Env, seasonId: number) {
   const divisions = await divisionsFor(env, seasonId);
 
   const { results: teams } = await env.DB.prepare(
-    `SELECT t.id, t.name, t.race,
+    `SELECT t.id, t.name, t.race, t.name_provisional,
             COALESCE(t.division_id, c.division_id) AS division_id,
             COALESCE(c.display_name, '') AS coach
        FROM team t LEFT JOIN coach c ON c.id = t.coach_id WHERE t.season_id = ?`,
   )
     .bind(seasonId)
-    .all<{ id: number; name: string; race: string; division_id: number | null; coach: string }>();
+    .all<{
+      id: number;
+      name: string;
+      race: string;
+      name_provisional: number;
+      division_id: number | null;
+      coach: string;
+    }>();
   const byId = new Map((teams ?? []).map((t) => [t.id, t]));
 
   const toStandings = (list: FixtureView[]): StandingsFixture[] =>
@@ -242,6 +256,7 @@ export async function standingsFor(env: Env, seasonId: number) {
       position: index + 1,
       ...row,
       teamName: byId.get(row.teamId)?.name ?? `Team ${row.teamId}`,
+      nameProvisional: (byId.get(row.teamId)?.name_provisional ?? 0) === 1,
       race: byId.get(row.teamId)?.race ?? '',
       coach: byId.get(row.teamId)?.coach ?? '',
     }));

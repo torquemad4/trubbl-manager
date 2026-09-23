@@ -77,6 +77,18 @@ function esc(value) {
   return String(value === null || value === undefined ? '' : value)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
+// TourPlay names divisions "Premier Division"; one added by hand may be just
+// "Premier". Append the word only when it is missing.
+function divisionTitle(name) {
+  var trimmed = String(name || '').trim();
+  return /\bdivisions?$/i.test(trimmed) ? trimmed : trimmed + ' Division';
+}
+// A hidden roster gives a two-letter code rather than a team name, and the
+// codes are not unique. Show the coach until the real name arrives.
+function teamLabel(name, provisional, coach) {
+  if (provisional && coach) return coach;
+  return name || coach || 'TBC';
+}
 function toast(message) {
   var el = document.getElementById('toast');
   el.textContent = message;
@@ -335,7 +347,9 @@ async function loadFixtures() {
       return '<tr data-fixture="' + f.id + '">' +
         '<td class="muted">' + f.id + '</td>' +
         '<td class="muted">' + esc(f.divisionName || (f.isFriendly ? 'inter-div' : '\u2014')) + '</td>' +
-        '<td>' + esc(f.homeTeam) + ' <span class="muted">v</span> ' + esc(f.awayTeam) +
+        '<td>' + esc(teamLabel(f.homeTeam, f.homeTeamProvisional, f.homeCoach)) +
+          ' <span class="muted">v</span> ' +
+          esc(teamLabel(f.awayTeam, f.awayTeamProvisional, f.awayCoach)) +
           '<div class="muted" style="font-size:12px">' + esc(f.homeCoach) + ' v ' + esc(f.awayCoach) + '</div></td>' +
         '<td>' + score + '</td>' +
         '<td><span class="pill">' + esc(f.status.replace(/_/g, ' ')) + '</span>' +
@@ -422,12 +436,13 @@ async function loadTable() {
     return;
   }
   document.getElementById('tab-table').innerHTML = groups.map(function (g) {
-    var title = g.division ? esc(g.division.name) + ' Division' : 'League table';
+    var title = g.division ? esc(divisionTitle(g.division.name)) : 'League table';
     return '<div class="card"><h2>' + title + '</h2>' +
       '<table><thead><tr><th>#</th><th>Team</th><th>Coach</th><th>P</th><th>W</th><th>D</th><th>L</th>' +
       '<th>TD+</th><th>TD\u2212</th><th>Net TD</th><th>Net CAS</th><th>Bonus</th><th>Conc</th><th>Pts</th></tr></thead><tbody>' +
       g.table.map(function (r) {
-        return '<tr><td>' + r.position + '</td><td>' + esc(r.teamName) + '</td>' +
+        return '<tr><td>' + r.position + '</td><td>' +
+          esc(teamLabel(r.teamName, r.nameProvisional, r.coach)) + '</td>' +
           '<td class="muted">' + esc(r.coach) + '</td>' +
           '<td>' + r.played + '</td><td>' + r.won + '</td><td>' + r.drawn + '</td><td>' + r.lost + '</td>' +
           '<td>' + r.touchdownsFor + '</td><td>' + r.touchdownsAgainst + '</td>' +

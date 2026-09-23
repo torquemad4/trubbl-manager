@@ -77,10 +77,36 @@ function shortDate(iso: string | null): string {
   });
 }
 
+/**
+ * Divisions arrive from TourPlay already called "Premier Division", but one
+ * added by hand may just be called "Premier". Append the word only if it is
+ * missing, rather than producing "Premier Division Division".
+ */
+export function divisionTitle(name: string): string {
+  return /\bdivisions?$/i.test(name.trim()) ? name.trim() : `${name.trim()} Division`;
+}
+
+/**
+ * Until the organiser opens the season, TourPlay gives a two-letter short code
+ * instead of a team name, and the codes are not unique — two coaches both
+ * registered as "BB". A code tells a reader nothing, so name the coach
+ * instead until the real team name arrives.
+ */
+function teamLabel(name: string, provisional: boolean, coach: string): string {
+  if (provisional && coach) return coach;
+  return name || coach || 'TBC';
+}
+
 function fixtureLine(fixture: FixtureView, withMentions = false): string {
   const home = withMentions ? mention(fixture.homeDiscordId, fixture.homeCoach) : fixture.homeCoach;
   const away = withMentions ? mention(fixture.awayDiscordId, fixture.awayCoach) : fixture.awayCoach;
-  const heading = `**${fixture.homeTeam}** (${home}) v **${fixture.awayTeam}** (${away})`;
+  // With no real team name there is nothing to put in front of the coach, so
+  // the line becomes coach v coach rather than "**BB** (@someone)".
+  const side = (team: string, provisional: boolean, who: string) =>
+    provisional || !team ? who : `**${team}** (${who})`;
+  const heading =
+    `${side(fixture.homeTeam, fixture.homeTeamProvisional, home)} v ` +
+    `${side(fixture.awayTeam, fixture.awayTeamProvisional, away)}`;
 
   if (fixture.rulingKind) {
     return `${heading} — ${RULING_LABELS[fixture.rulingKind]} ${fixture.homeScore}–${fixture.awayScore}`;
@@ -196,16 +222,22 @@ async function tableCommand(env: Env, seasonId: number) {
   if (withRows.length === 0) return replyJson('No results yet.');
 
   const blocks = withRows.map((group) => {
-    const heading = group.division ? `**${group.division.name} Division**` : '**League table**';
+    const heading = group.division ? `**${divisionTitle(group.division.name)}**` : '**League table**';
     const lines = group.table.map(
       (r) =>
-        `${String(r.position).padStart(2)}. ${r.teamName} — **${r.points}** ` +
+        `${String(r.position).padStart(2)}. ${teamLabel(r.teamName, r.nameProvisional, r.coach)} — **${r.points}** ` +
         `(${r.won}/${r.drawn}/${r.lost}, TD ${sign(r.netTouchdowns)}, CAS ${sign(r.netCasualties)}` +
         `${r.bonusPoints ? `, +${r.bonusPoints} bonus` : ''})`,
     );
     return `${heading}\n${lines.join('\n')}`;
   });
-  return replyJson(clamp(blocks.join('\n\n').split('\n')), false);
+
+  // Say why the names look like that, rather than leaving people to wonder.
+  const anyProvisional = withRows.some((g) => g.table.some((r) => r.nameProvisional));
+  const footer = anyProvisional
+    ? '\n\n_Coaches are listed by name until TourPlay makes the rosters public._'
+    : '';
+  return replyJson(clamp(blocks.join('\n\n').split('\n')) + footer, false);
 }
 
 function sign(value: number): string {
