@@ -113,18 +113,7 @@ const BODY = String.raw`
   <li><b>The Castle Tap</b>, 120 Castle St, RG1 7RJ. A friendly and alternative pub with a great selection of booze, and delicious cheese boards. We recommend booking in advance if you are planning to play here on a Friday or weekend evening as it can get quite full, but it is usually quiet on weekdays or early weekend afternoons.</li>
 </ul>
 <p>When organising games, do check if there is another game happening at the same time, as it is always nice to have games side by side. Also, remember the venues are not charging us anything for the 2&ndash;3 hours we are taking up their tables, so please be considerate of other patrons and consider getting a drink or two while you are there.</p>
-<p>Alternatively, Reading's local games shop <b>Eclectic Games</b> is at 21 Duke Street, and has a games room available for &pound;10 per person for a 4-hour session. Eclectic also stocks Blood Bowl merch, paints and other goodies, so if you need any hobby supplies, give them a look!</p>
-
-<h3 class="clause" id="s1-4"><span class="num">1.4</span> Getting Started <a class="link" href="#s1-4">#</a></h3>
-<div class="new"><b>New for Season VII</b>The short version of everything below, for anyone joining us for the first time.</div>
-<ol class="body">
-  <li><b>Join the Discord.</b> Everything happens there &ndash; fixtures, results, arguments about dice.</li>
-  <li><b>Sign up on TourPlay</b> for the season. It is free for coaches and mandatory for the league; see <a href="#s2-2">&sect;2.2</a>.</li>
-  <li><b>Build a team</b> with a 1,000,000 GP budget, using only what <a href="#s2-3">&sect;2.3</a> allows.</li>
-  <li><b>Say hello</b> in your division's games-setup channel and get your first fixture in the diary. Rounds are two weeks long, so there is no rush, but there is a deadline.</li>
-  <li><b>Play, and log the game on TourPlay.</b> Touchdowns, casualties and injuries by the end of the match &ndash; that is all we need.</li>
-</ol>
-<p>If you are new to Blood Bowl rather than just new to TRUBBL, say so. Several of our coaches will happily walk you through a first game, and nobody here minds explaining a rule twice. See also <a href="#s2-1">&sect;2.1</a>, which is the only rule that really matters.</p>
+<p>Alternatively, Reading's local games shop <b>Eclectic Games</b> is at 21 Duke Street, and has a games room available for hire. Eclectic also stocks Blood Bowl merch, paints and other goodies, so if you need any hobby supplies, give them a look!</p>
 
 <h2 class="part" id="s2"><span class="num">2</span> League Rules</h2>
 
@@ -301,7 +290,6 @@ const TOC = String.raw`
       <li><a href="#s1-1">1.1 Who we Are</a></li>
       <li><a href="#s1-2">1.2 Contact</a></li>
       <li><a href="#s1-3">1.3 Venues</a></li>
-      <li><a href="#s1-4">1.4 Getting Started</a></li>
     </ol>
   </li>
   <li><a class="top" href="#s2">2 &middot; League Rules</a>
