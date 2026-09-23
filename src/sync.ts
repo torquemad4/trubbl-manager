@@ -21,6 +21,8 @@ export interface SyncReport {
   divisions: number;
   fixtures: number;
   friendlies: number;
+  /** Teams whose short code was replaced by a real name this run. */
+  namesLearned: number;
   newlyPlayed: number;
   pendingRegistrations: number;
   hiddenRosters: number;
@@ -165,16 +167,36 @@ export async function syncSeason(env: Env, season: SeasonRow, actor = 'sync'): P
   const roundIdByNumber = new Map((roundRows ?? []).map((r) => [r.number, r.id]));
 
   const { results: teamRows } = await env.DB.prepare(
-    'SELECT id, tourplay_roster_key, division_id FROM team WHERE season_id = ?',
+    'SELECT id, tourplay_roster_key, division_id, name, race, name_provisional FROM team WHERE season_id = ?',
   )
     .bind(season.id)
-    .all<{ id: number; tourplay_roster_key: string | null; division_id: number | null }>();
+    .all<{
+      id: number;
+      tourplay_roster_key: string | null;
+      division_id: number | null;
+      name: string;
+      race: string;
+      name_provisional: number;
+    }>();
   const teamIdByPlayer = new Map(
     (teamRows ?? [])
       .filter((t) => t.tourplay_roster_key)
       .map((t) => [t.tourplay_roster_key as string, t.id]),
   );
   const divisionByTeam = new Map((teamRows ?? []).map((t) => [t.id, t.division_id]));
+  const teamById = new Map((teamRows ?? []).map((t) => [t.id, t]));
+
+  // TourPlay publishes the real team name on a match roster even while the
+  // inscriptions endpoint is still withholding it, so the fixtures are the
+  // only place a hidden-roster season gives us anything better than a
+  // two-letter code. Collect the best name each team appears under, and
+  // write them once after the loop rather than per fixture.
+  const nameFromMatch = new Map<number, { name: string; race: string }>();
+  const noteName = (teamId: number | null, side: { teamName: string; race: string }) => {
+    if (teamId === null) return;
+    const name = side.teamName.trim();
+    if (name) nameFromMatch.set(teamId, { name, race: side.race });
+  };
 
   // --- fixtures ------------------------------------------------------------
   let fixtures = 0;
@@ -199,6 +221,9 @@ export async function syncSeason(env: Env, season: SeasonRow, actor = 'sync'): P
         `Match ${match.matchId} (round ${match.round}) has a side not matched to a registered team`,
       );
     }
+
+    noteName(homeTeamId, match.home);
+    noteName(awayTeamId, match.away);
 
     const matchDivision = match.group ? divisionByGroup.get(match.group.id) ?? null : null;
 
@@ -292,6 +317,26 @@ export async function syncSeason(env: Env, season: SeasonRow, actor = 'sync'): P
     fixtures += 1;
   }
 
+  // Now adopt any real team name the fixtures revealed. Only write where it
+  // actually differs, so a re-sync of an unchanged season does nothing.
+  let namesLearned = 0;
+  for (const [teamId, found] of nameFromMatch) {
+    const current = teamById.get(teamId);
+    const race = found.race || current?.race || '';
+    if (current && current.name === found.name && current.name_provisional === 0 && current.race === race) {
+      continue;
+    }
+    await env.DB.prepare(
+      'UPDATE team SET name = ?, race = ?, name_provisional = 0 WHERE id = ?',
+    )
+      .bind(found.name, race, teamId)
+      .run();
+    if (current?.name_provisional === 1) namesLearned += 1;
+  }
+  if (namesLearned > 0) {
+    await audit(env, actor, 'sync.names', `season:${season.id}`, { learned: namesLearned });
+  }
+
   await env.DB.prepare(
     `UPDATE season SET
        tourplay_tournament_id = ?, tourplay_phase_id = ?, total_rounds = ?,
@@ -317,6 +362,7 @@ export async function syncSeason(env: Env, season: SeasonRow, actor = 'sync'): P
     divisions: groups.size,
     fixtures,
     friendlies,
+    namesLearned,
     newlyPlayed,
     pendingRegistrations,
     hiddenRosters,
