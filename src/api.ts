@@ -312,10 +312,12 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
     const season = await activeSeason(env);
     if (!season) return json({ coaches: [] });
     const { results } = await env.DB.prepare(
-      `SELECT c.*, t.name AS team_name, t.race, d.name AS division_name
+      // A team's division comes from the draw; before there is one, the
+      // coach's own assignment stands in.
+      `SELECT c.*, t.name AS team_name, t.race, d.name AS division_name, d.tier AS division_tier
          FROM coach c
          LEFT JOIN team t ON t.coach_id = c.id
-         LEFT JOIN division d ON d.id = t.division_id
+         LEFT JOIN division d ON d.id = COALESCE(t.division_id, c.division_id)
         WHERE c.season_id = ? ORDER BY d.tier, c.display_name`,
     )
       .bind(season.id)

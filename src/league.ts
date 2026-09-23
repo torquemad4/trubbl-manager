@@ -213,7 +213,9 @@ export async function standingsFor(env: Env, seasonId: number) {
   const divisions = await divisionsFor(env, seasonId);
 
   const { results: teams } = await env.DB.prepare(
-    `SELECT t.id, t.name, t.race, t.division_id, COALESCE(c.display_name, '') AS coach
+    `SELECT t.id, t.name, t.race,
+            COALESCE(t.division_id, c.division_id) AS division_id,
+            COALESCE(c.display_name, '') AS coach
        FROM team t LEFT JOIN coach c ON c.id = t.coach_id WHERE t.season_id = ?`,
   )
     .bind(seasonId)
