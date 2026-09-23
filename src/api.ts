@@ -284,6 +284,41 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
     return json({ ok: true });
   }
 
+  // --- pre-season ----------------------------------------------------------
+
+  if (path === '/api/preseason' && method === 'GET') {
+    const season = await activeSeason(env);
+    if (!season) return json({ rows: [], counts: {} });
+
+    const { results } = await env.DB.prepare(
+      `SELECT c.display_name, c.discord_username, c.discord_user_id, c.naf_number,
+              c.poll_vote, c.preseason_note, c.last_season_note,
+              c.tourplay_player_id IS NOT NULL AS on_tourplay,
+              COALESCE(t.name, '') AS team_name, COALESCE(t.race, '') AS race,
+              COALESCE(d.name, '') AS division, COALESCE(d.tier, 9) AS tier
+         FROM coach c
+         LEFT JOIN team t ON t.coach_id = c.id
+         LEFT JOIN division d ON d.id = COALESCE(t.division_id, c.division_id)
+        WHERE c.season_id = ?
+        ORDER BY tier, c.display_name`,
+    )
+      .bind(season.id)
+      .all<any>();
+
+    const rows = results ?? [];
+    return json({
+      season: season.name,
+      rows,
+      counts: {
+        total: rows.length,
+        confirmed: rows.filter((r) => r.poll_vote === 'yes' && r.on_tourplay).length,
+        awaitingTourplay: rows.filter((r) => r.poll_vote === 'yes' && !r.on_tourplay).length,
+        declined: rows.filter((r) => r.poll_vote === 'no').length,
+        noResponse: rows.filter((r) => r.poll_vote === '').length,
+      },
+    });
+  }
+
   // --- divisions -----------------------------------------------------------
 
   if (path === '/api/divisions' && method === 'GET') {

@@ -88,6 +88,18 @@ export async function syncSeason(env: Env, season: SeasonRow, actor = 'sync'): P
     if (!entrant.validated) pendingRegistrations += 1;
     if (entrant.rosterHidden) hiddenRosters += 1;
 
+    // A coach may already exist without a TourPlay id: added by hand during
+    // signups, before they registered. Claim that row rather than inserting a
+    // second one, or the same person ends up in the season twice — once with
+    // their division and Discord link, once with their TourPlay registration.
+    await env.DB.prepare(
+      `UPDATE coach SET tourplay_player_id = ?, naf_number = COALESCE(?, naf_number), naf_verified = ?
+         WHERE season_id = ? AND tourplay_player_id IS NULL
+           AND lower(display_name) = lower(?)`,
+    )
+      .bind(entrant.playerId, entrant.nafNumber, entrant.nafVerified ? 1 : 0, season.id, entrant.coachName)
+      .run();
+
     await env.DB.prepare(
       `INSERT INTO coach (season_id, tourplay_player_id, display_name, naf_number, naf_verified)
          VALUES (?, ?, ?, ?, ?)

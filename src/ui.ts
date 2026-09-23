@@ -83,6 +83,7 @@ export const PORTAL_HTML = String.raw`<!doctype html>
 <nav id="tabs"></nav>
 <main>
   <section id="tab-dashboard"></section>
+  <section id="tab-preseason" hidden></section>
   <section id="tab-rounds" hidden></section>
   <section id="tab-fixtures" hidden></section>
   <section id="tab-extensions" hidden></section>
@@ -94,7 +95,7 @@ export const PORTAL_HTML = String.raw`<!doctype html>
 <div id="toast"></div>
 <script>
 var TABS = [
-  ['dashboard', 'Dashboard'], ['rounds', 'Rounds'], ['fixtures', 'Fixtures'],
+  ['dashboard', 'Dashboard'], ['preseason', 'Pre-season'], ['rounds', 'Rounds'], ['fixtures', 'Fixtures'],
   ['extensions', 'Extensions'], ['table', 'Table'], ['coaches', 'Coaches'],
   ['settings', 'Settings'], ['audit', 'Audit']
 ];
@@ -155,6 +156,7 @@ function windowPill(view) {
 async function load(name) {
   try {
     if (name === 'dashboard') return await loadDashboard();
+    if (name === 'preseason') return await loadPreseason();
     if (name === 'rounds') return await loadRounds();
     if (name === 'fixtures') return await loadFixtures();
     if (name === 'extensions') return await loadExtensions();
@@ -230,6 +232,60 @@ async function loadDashboard() {
     try { var r = await post('/api/tick'); toast('Done. Opened ' + r.opened.length + ', closed ' + r.closed.length + ', nagged ' + r.nagged.length + '.'); load('dashboard'); }
     catch (error) { toast(error.message); }
   };
+}
+
+var VOTE_LABEL = {
+  yes: ['Voted yes', 'open'],
+  no:  ['Voted no', 'overdue'],
+  '':  ['No response', 'soon']
+};
+
+async function loadPreseason() {
+  var data = await api('/api/preseason');
+  var el = document.getElementById('tab-preseason');
+  if (!data.rows || !data.rows.length) {
+    el.innerHTML = '<div class="card"><h2>Pre-season</h2><p class="muted">Nobody registered yet.</p></div>';
+    return;
+  }
+  var c = data.counts;
+  var html = '<div class="tiles">' +
+    '<div class="tile"><div class="n">' + c.total + '</div><div class="k">On the list</div></div>' +
+    '<div class="tile"><div class="n">' + c.confirmed + '</div><div class="k">Confirmed</div></div>' +
+    '<div class="tile"><div class="n">' + c.awaitingTourplay + '</div><div class="k">Awaiting TourPlay</div></div>' +
+    '<div class="tile"><div class="n">' + c.noResponse + '</div><div class="k">No response</div></div>' +
+    '</div>';
+
+  if (c.awaitingTourplay) {
+    var waiting = data.rows.filter(function (r) { return r.poll_vote === 'yes' && !r.on_tourplay; })
+      .map(function (r) { return esc(r.display_name); }).join(', ');
+    html += '<div class="card"><h2>Still to register on TourPlay</h2><p>' + waiting +
+      '</p><p class="note">They have said they are playing but have no TourPlay registration, ' +
+      'so they cannot be drawn into fixtures yet.</p></div>';
+  }
+
+  html += '<div class="card"><h2>Season 7 sign-ups</h2><table><thead><tr>' +
+    '<th>Coach (TourPlay)</th><th>Discord</th><th>Team</th><th>NAF</th>' +
+    '<th>Poll</th><th>TourPlay</th><th>Division</th><th>Last season</th></tr></thead><tbody>' +
+    data.rows.map(function (r) {
+      var v = VOTE_LABEL[r.poll_vote] || VOTE_LABEL[''];
+      var tp = r.on_tourplay
+        ? '<span class="pill open">registered</span>'
+        : '<span class="pill soon">not yet</span>';
+      return '<tr>' +
+        '<td>' + esc(r.display_name) + (r.preseason_note ? '<div class="muted" style="font-size:12px">' + esc(r.preseason_note) + '</div>' : '') + '</td>' +
+        '<td class="muted">' + (r.discord_username ? '@' + esc(r.discord_username) : '—') + '</td>' +
+        '<td class="muted">' + (esc(r.team_name) || '—') + (r.race ? ' · ' + esc(r.race) : '') + '</td>' +
+        '<td class="muted">' + (r.naf_number || '—') + '</td>' +
+        '<td><span class="pill ' + v[1] + '">' + v[0] + '</span></td>' +
+        '<td>' + tp + '</td>' +
+        '<td class="muted">' + (esc(r.division) || '—') + '</td>' +
+        '<td class="muted">' + (esc(r.last_season_note) || '—') + '</td>' +
+        '</tr>';
+    }).join('') + '</tbody></table>' +
+    '<p class="note">Everyone who voted in the sign-up poll or registered on TourPlay, plus any Season 6 coach ' +
+    'who earned a promotion but has not yet responded. Team names stay blank until the season opens on ' +
+    'TourPlay, which is when it stops hiding rosters.</p></div>';
+  el.innerHTML = html;
 }
 
 async function loadRounds() {
