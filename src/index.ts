@@ -1,6 +1,7 @@
 import { handleApi } from './api.js';
 import { handleCommand, type Interaction } from './commands.js';
 import { InteractionType, pong, verifyInteraction } from './discord.js';
+import { RULES_HTML } from './rules-page.js';
 import { tick } from './scheduler.js';
 import { PORTAL_HTML } from './ui.js';
 import type { Env } from './types.js';
@@ -9,6 +10,18 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, '') || '/';
+
+    // The rules pack is public: its own hostname, no Access in front, and
+    // cacheable. It is also reachable at /rules on the portal host, which is
+    // handy for previewing a change before it is live to the league.
+    if (env.RULES_HOSTNAME && url.hostname === env.RULES_HOSTNAME) {
+      if (request.method !== 'GET') return new Response('Method not allowed', { status: 405 });
+      return path === '/' ? rulesPage() : new Response('Not found', { status: 404 });
+    }
+
+    if (path === '/rules' && request.method === 'GET') {
+      return rulesPage();
+    }
 
     if (path === '/health') {
       return new Response('ok', { headers: { 'content-type': 'text/plain' } });
@@ -41,6 +54,15 @@ export default {
     );
   },
 };
+
+function rulesPage(): Response {
+  return new Response(RULES_HTML, {
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'public, max-age=300',
+    },
+  });
+}
 
 async function handleInteractions(request: Request, env: Env): Promise<Response> {
   if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });

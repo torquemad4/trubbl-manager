@@ -5,6 +5,10 @@ export interface Env {
   ACCESS_TEAM_DOMAIN?: string; // e.g. torquemada.cloudflareaccess.com
   ACCESS_AUD?: string;         // Application Audience tag
 
+  // The hostname the public rules pack is served on. No Access application
+  // sits in front of it, so it needs no auth of any kind.
+  RULES_HOSTNAME?: string;
+
   // Discord
   DISCORD_PUBLIC_KEY?: string; // verifies inbound interactions
   DISCORD_BOT_TOKEN?: string;  // posts announcements and command replies

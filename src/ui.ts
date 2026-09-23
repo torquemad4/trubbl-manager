@@ -2,81 +2,53 @@
 // The embedded script deliberately uses string concatenation rather than
 // template literals, because this whole file is itself a template literal.
 
+import { FONT_LINKS, THEME_CSS } from './theme.js';
+
+// Portal-only furniture. Everything shared with the public rules pack —
+// colours, type, tables, buttons, pills — comes from src/theme.ts.
+const PORTAL_CSS = `
+header {
+  display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+  padding: 16px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
+}
+header h1 { font: var(--display); font-size: 26px; letter-spacing: 0.05em; }
+header h1 .acc { color: var(--accent); }
+header .who { margin-left: auto; color: var(--muted); font-size: 13px; }
+nav { display: flex; gap: 4px; flex-wrap: wrap; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+nav button {
+  background: none; border: 1px solid transparent; color: var(--muted);
+  padding: 6px 12px; font-size: 14px;
+}
+nav button[aria-selected="true"] { background: var(--panel); color: var(--ink); border-color: var(--line); }
+main { padding: 20px; max-width: 1100px; }
+section[hidden] { display: none; }
+main h2 {
+  font: var(--display); font-size: 17px; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--muted); margin: 0 0 12px;
+}
+main .card { margin-bottom: 16px; }
+main .tiles { margin-bottom: 16px; }
+button.act { font-size: 13px; padding: 5px 10px; border-radius: 6px; }
+#toast {
+  position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+  background: var(--panel); border: 1px solid var(--accent); color: var(--ink);
+  padding: 10px 16px; border-radius: var(--radius); display: none; max-width: 90vw;
+  box-shadow: 0 6px 24px var(--shadow);
+}
+`;
+
 export const PORTAL_HTML = String.raw`<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TRUBBL Manager</title>
-<style>
-  :root {
-    --bg: #12100e; --panel: #1c1917; --line: #322c28; --ink: #f2ece4;
-    --muted: #a39a90; --accent: #c8963e; --danger: #c4553d; --ok: #6f9a52;
-    --radius: 10px;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; background: var(--bg); color: var(--ink);
-    font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  }
-  header {
-    display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
-    padding: 18px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
-  }
-  header h1 { margin: 0; font-size: 19px; letter-spacing: 0.04em; text-transform: uppercase; }
-  header .who { margin-left: auto; color: var(--muted); font-size: 13px; }
-  nav { display: flex; gap: 4px; flex-wrap: wrap; padding: 10px 16px; border-bottom: 1px solid var(--line); }
-  nav button {
-    background: none; border: 1px solid transparent; color: var(--muted);
-    padding: 6px 12px; border-radius: var(--radius); cursor: pointer; font: inherit;
-  }
-  nav button[aria-selected="true"] { background: var(--panel); color: var(--ink); border-color: var(--line); }
-  main { padding: 20px; max-width: 1100px; }
-  section[hidden] { display: none; }
-  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 12px; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; margin-bottom: 16px; }
-  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
-  .tile { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; }
-  .tile .n { font-size: 26px; font-weight: 600; }
-  .tile .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
-  table { width: 100%; border-collapse: collapse; font-size: 14px; }
-  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
-  th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
-  tr:last-child td { border-bottom: none; }
-  button.act {
-    background: var(--panel); color: var(--ink); border: 1px solid var(--line);
-    border-radius: 6px; padding: 5px 10px; cursor: pointer; font: inherit; font-size: 13px;
-  }
-  button.act:hover { border-color: var(--accent); }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #17130c; font-weight: 600; }
-  button.danger { border-color: var(--danger); color: var(--danger); }
-  input, select {
-    background: #0d0b0a; color: var(--ink); border: 1px solid var(--line);
-    border-radius: 6px; padding: 6px 8px; font: inherit; font-size: 14px;
-  }
-  label { display: block; margin-bottom: 10px; font-size: 13px; color: var(--muted); }
-  label input, label select { display: block; margin-top: 4px; width: 100%; max-width: 320px; }
-  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
-  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; border: 1px solid var(--line); }
-  .pill.open { color: var(--ok); border-color: var(--ok); }
-  .pill.overdue { color: var(--danger); border-color: var(--danger); }
-  .pill.soon { color: var(--accent); border-color: var(--accent); }
-  .muted { color: var(--muted); }
-  .note { color: var(--muted); font-size: 13px; margin-top: 8px; }
-  #toast {
-    position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
-    background: var(--panel); border: 1px solid var(--accent); color: var(--ink);
-    padding: 10px 16px; border-radius: var(--radius); display: none; max-width: 90vw;
-  }
-  @media (prefers-color-scheme: light) {
-    :root { --bg: #f7f4ef; --panel: #fff; --line: #e2dbd1; --ink: #23201c; --muted: #6f675e; }
-    input, select { background: #fff; }
-  }
-</style>
+${FONT_LINKS}
+<style>${THEME_CSS}${PORTAL_CSS}</style>
 </head>
 <body>
 <header>
-  <h1>TRUBBL Manager</h1>
+  <h1>TR<span class="acc">U</span>BBL Manager</h1>
   <span id="season" class="muted"></span>
   <span class="who" id="who"></span>
 </header>
