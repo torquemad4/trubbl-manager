@@ -3,7 +3,7 @@
 import { requireAdmin, viewerFor } from './auth.js';
 import { activeSeason, audit, json, nowIso, scoringFrom, seasonById, setSetting, settings } from './db.js';
 import { RULING_LABELS } from './commands.js';
-import { announceOnce, mention } from './discord.js';
+import { announceOnce, DISCORD_AUTH_SETTING, mention, parseDiscordAuthError } from './discord.js';
 import {
   currentRound,
   divisionsFor,
@@ -49,11 +49,19 @@ export async function handleApi(request: Request, env: Env, path: string): Promi
     const pendingExtensions = await env.DB.prepare(
       "SELECT COUNT(*) AS n FROM extension WHERE status = 'requested'",
     ).first<{ n: number }>();
+    const discordAuth = await env.DB.prepare('SELECT value FROM setting WHERE key = ?')
+      .bind(DISCORD_AUTH_SETTING)
+      .first<{ value: string }>();
 
     return json({
       season,
       round,
       window,
+      // The webhook URL is a credential: say only whether one is configured.
+      discord: {
+        authError: parseDiscordAuthError(discordAuth?.value),
+        alertWebhook: Boolean(env.DISCORD_ALERT_WEBHOOK_URL),
+      },
       counts: {
         fixtures: fixtures.length,
         outstanding: left.length,

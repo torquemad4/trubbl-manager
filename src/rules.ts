@@ -150,6 +150,20 @@ export function followOnWindows<T extends WindowedRound>(
   return assigned;
 }
 
+/**
+ * Whether a round's "round is open" posts should still be attempted. They go
+ * out when the round opens; if Discord refused them then, every later run
+ * tries again for as long as the round is open and its window has not
+ * closed. Posts that did go out are skipped by their dedupe key, so this is
+ * safe to call on every run.
+ */
+export function openAnnouncementDue(status: string, closesAt: string | null, now: Date): boolean {
+  if (status !== 'open') return false;
+  if (!closesAt) return true;
+  const closes = Date.parse(closesAt);
+  return Number.isNaN(closes) || now.getTime() <= closes;
+}
+
 /** A fixture still needing action from its coaches. */
 export function isOutstanding(status: FixtureStatus): boolean {
   return status === 'unplayed' || status === 'scheduled';

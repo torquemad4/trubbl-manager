@@ -14,6 +14,9 @@ export interface Env {
   DISCORD_BOT_TOKEN?: string;  // posts announcements and command replies
   DISCORD_APP_ID?: string;
   DISCORD_GUILD_ID?: string;
+  // A channel webhook for alarms about the bot itself. It carries its own
+  // credential, so it still gets through when DISCORD_BOT_TOKEN is dead.
+  DISCORD_ALERT_WEBHOOK_URL?: string;
 
   // Local development only. Never set in production.
   DEV_ADMIN_EMAIL?: string;

@@ -177,7 +177,17 @@ async function loadDashboard() {
   var counts = data.counts;
   var round = data.round;
 
-  var html = '<div class="tiles">' +
+  var html = '';
+  if (data.discord && data.discord.authError) {
+    html += '<div class="card" style="border-color:var(--danger)"><h2 style="color:var(--danger)">The bot cannot post to Discord</h2>' +
+      '<p>Discord has rejected commish-bot\'s token since ' + day(data.discord.authError.since) +
+      ' (' + esc(data.discord.authError.error) + '). Nothing the bot posts is getting through: round announcements, chase nags, rulings, extension requests.</p>' +
+      '<p class="note">Fix: put the current bot token into the Worker secret <code>DISCORD_BOT_TOKEN</code>. Missed round announcements go out on the next daily run. ' +
+      (data.discord.alertWebhook ? 'Alarms are going to the alert webhook.' : 'No alert webhook is configured, so this banner is the only warning.') +
+      '</p></div>';
+  }
+
+  html += '<div class="tiles">' +
     '<div class="tile"><div class="n">' + (round ? round.number : '—') + '</div><div class="k">Round</div></div>' +
     '<div class="tile"><div class="n">' + counts.played + '/' + counts.fixtures + '</div><div class="k">Played</div></div>' +
     '<div class="tile"><div class="n">' + counts.outstanding + '</div><div class="k">Outstanding</div></div>' +

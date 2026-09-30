@@ -6,7 +6,14 @@
 // that people mute it.
 
 import { activeSeason, audit, nagDaysFrom, nowIso, settings } from './db.js';
-import { announceOnce, mention } from './discord.js';
+import {
+  alertOwner,
+  announceOnce,
+  DISCORD_AUTH_SETTING,
+  discordAlertText,
+  mention,
+  parseDiscordAuthError,
+} from './discord.js';
 import {
   currentRound,
   divisionsFor,
@@ -18,7 +25,7 @@ import {
   type FixtureView,
   type RoundRow,
 } from './league.js';
-import { followOnWindows, windowState } from './rules.js';
+import { followOnWindows, openAnnouncementDue, windowState } from './rules.js';
 import { recordSyncFailure, syncSeason } from './sync.js';
 import type { Env } from './types.js';
 
@@ -32,6 +39,10 @@ export interface TickReport {
   settled: number[];
   nagged: string[];
   autoForfeited: number;
+  /** A dead bot token, or failed posts, found on this run. Null when Discord is healthy. */
+  discordProblem: string | null;
+  /** What happened to the alarm about it, if one was needed. */
+  alert: 'sent' | 'already_sent' | 'no_alert_channel' | 'failed' | null;
 }
 
 const DAY_MS = 86_400_000;
@@ -94,7 +105,11 @@ export async function tick(env: Env, now = new Date()): Promise<TickReport> {
     settled: [],
     nagged: [],
     autoForfeited: 0,
+    discordProblem: null,
+    alert: null,
   };
+  // audit.at is SQLite's datetime('now'): UTC, space-separated, to the second.
+  const startedAt = new Date().toISOString().slice(0, 19).replace('T', ' ');
 
   const season = await activeSeason(env);
   if (!season) return report;
@@ -154,9 +169,18 @@ export async function tick(env: Env, now = new Date()): Promise<TickReport> {
         .run();
       round.status = 'open';
       report.opened.push(round.number);
+    }
 
-      const fixtures = await fixturesForRound(env, round.id);
+    if (round.status !== 'open') continue;
 
+    const fixtures = await fixturesForRound(env, round.id);
+
+    // 2b. The "round is open" posts. Tried on the run that opens the round,
+    //     and again on every run after for as long as the round is open, so a
+    //     post Discord refused — a dead token, a missing channel permission —
+    //     goes out once the fault is fixed rather than being lost for good.
+    //     Each is deduped, so one that already went out is never repeated.
+    if (openAnnouncementDue(round.status, round.closes_at, now)) {
       // The dates channel is the standing record of when each round runs.
       if (datesChannel) {
         await announceOnce(
@@ -184,9 +208,6 @@ export async function tick(env: Env, now = new Date()): Promise<TickReport> {
       );
     }
 
-    if (round.status !== 'open') continue;
-
-    const fixtures = await fixturesForRound(env, round.id);
     const left = outstanding(fixtures);
     const view = windowState(now, round.opens_at, round.closes_at, null, closingSoon);
 
@@ -318,8 +339,48 @@ export async function tick(env: Env, now = new Date()): Promise<TickReport> {
     }
   }
 
+  // 5. If the bot is not getting through, say so somewhere a person will see
+  //    it. A failed post only lands in the audit log, which nobody reads; a
+  //    dead token fails every post silently until someone notices the quiet.
+  //    The alarm goes by webhook, which does not depend on the bot token, and
+  //    at most once a day, so it nags until fixed without flooding.
+  await raiseDiscordAlarm(env, report, startedAt, now);
+
   await audit(env, 'cron', 'tick', season.tourplay_slug, report);
   return report;
+}
+
+async function raiseDiscordAlarm(env: Env, report: TickReport, startedAt: string, now: Date): Promise<void> {
+  const map = await settings(env);
+  const authError = parseDiscordAuthError(map[DISCORD_AUTH_SETTING]);
+  const { results } = await env.DB.prepare(
+    "SELECT subject, detail FROM audit WHERE action = 'announce.failed' AND at >= ? ORDER BY id",
+  )
+    .bind(startedAt)
+    .all<{ subject: string | null; detail: string | null }>();
+  const failures = (results ?? []).map((row) => {
+    let error = 'unknown error';
+    try {
+      error = String((JSON.parse(row.detail ?? '{}') as { error?: string }).error ?? error);
+    } catch {
+      // keep the placeholder
+    }
+    return { kind: row.subject ?? 'post', error };
+  });
+
+  if (!authError && failures.length === 0) return;
+
+  report.discordProblem = authError
+    ? `bot token rejected since ${authError.since}: ${authError.error.slice(0, 120)}`
+    : `${failures.length} post${failures.length === 1 ? '' : 's'} failed`;
+
+  const mentionUserId = map['alert_discord_user_id'] || null;
+  report.alert = await alertOwner(
+    env,
+    `alert:discord:${dayStamp(now)}`,
+    discordAlertText(authError, failures, mentionUserId),
+    mentionUserId,
+  );
 }
 
 async function markChased(env: Env, fixtures: FixtureView[], state: string): Promise<void> {

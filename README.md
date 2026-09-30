@@ -161,7 +161,24 @@ cron did not run that day does not pile up and fire later.
 
 Every Discord post is claimed under a dedupe key before it is sent, so a retried
 or double-fired cron cannot nag the league twice. A post that *fails* releases
-its claim so the next run retries it, and records the failure in the audit log.
+its claim and records the failure in the audit log. The "round is open" posts
+are retried on every daily run while the round is open and its window has not
+closed, so an announcement Discord refused goes out once the fault is fixed.
+
+**When the bot stops getting through.** A 401 from Discord means the bot token
+itself is dead (usually regenerated in the developer portal without updating
+the Worker), and every post fails until `DISCORD_BOT_TOKEN` is replaced. The
+Worker records that, shows a red banner on the portal dashboard, and at the end
+of each daily run sends one alarm a day through `DISCORD_ALERT_WEBHOOK_URL` —
+a channel webhook, which carries its own credential and so still works when
+the bot token is the thing that died. It mentions the Discord user in the
+`alert_discord_user_id` setting. Other failed posts on a run (a 403 means the
+bot lacks permission in that channel) are included in the same alarm. With no
+webhook configured, the banner is the only warning.
+
+```bash
+npx wrangler secret put DISCORD_ALERT_WEBHOOK_URL   # Channel -> Integrations -> Webhooks -> Copy URL
+```
 
 ## Development
 

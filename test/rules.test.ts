@@ -7,12 +7,39 @@ import {
   daysBetween,
   dueNags,
   followOnWindows,
+  openAnnouncementDue,
   parseNagDays,
   windowState,
   type StandingsFixture,
 } from '../src/rules.js';
 
 const at = (iso: string) => new Date(iso);
+
+describe('retrying a round-open announcement', () => {
+  const closes = '2026-10-18T23:59:59Z';
+
+  it('is due while the round is open and its window has not closed', () => {
+    expect(openAnnouncementDue('open', closes, at('2026-09-30T08:00:00Z'))).toBe(true);
+  });
+
+  it('is due right up to the closing second', () => {
+    expect(openAnnouncementDue('open', closes, at('2026-10-18T23:59:59Z'))).toBe(true);
+  });
+
+  it('stops once the window has closed, so nobody is told a finished round is open', () => {
+    expect(openAnnouncementDue('open', closes, at('2026-10-19T00:00:00Z'))).toBe(false);
+  });
+
+  it('is never due for a round that is not open', () => {
+    for (const status of ['pending', 'closed', 'settled']) {
+      expect(openAnnouncementDue(status, closes, at('2026-09-30T08:00:00Z'))).toBe(false);
+    }
+  });
+
+  it('is due for an open round with no close date', () => {
+    expect(openAnnouncementDue('open', null, at('2027-01-01T00:00:00Z'))).toBe(true);
+  });
+});
 
 describe('follow-on windows for rounds drawn mid-season', () => {
   const dated = (number: number, opens_at: string, closes_at: string) => ({ number, opens_at, closes_at });
