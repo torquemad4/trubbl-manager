@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_FEED_BOT_ID,
+  displayTeamName,
   parseFeedMessage,
   parseFooter,
   parseScheduledWhen,
   parseSide,
+  sameTeamName,
   type FeedMessage,
 } from '../src/feed.js';
 
@@ -154,5 +156,19 @@ describe('the pieces', () => {
       footer: { text: 'Brewtown Kegger-Boys' },
     });
     expect(parseFeedMessage(event, BOT, SLUG)).toMatchObject({ kind: 'ignored' });
+  });
+});
+
+describe('teams renamed on TourPlay', () => {
+  it('turns the capitalised name in a post into a readable one', () => {
+    expect(displayTeamName('IMPERIUM NOBILITY')).toBe('Imperium Nobility');
+    expect(displayTeamName('BREWTOWN KEGGER-BOYS')).toBe('Brewtown Kegger-Boys');
+    expect(displayTeamName('THE [DIS]EMBOWLERS')).toBe('The [Dis]embowlers');
+    expect(displayTeamName('EMO PHASE V2.026')).toBe('Emo Phase V2.026');
+  });
+
+  it('does not count a difference in case or spacing as a rename', () => {
+    expect(sameTeamName('Caliban Crusaders (trubbl)', 'CALIBAN CRUSADERS (TRUBBL)')).toBe(true);
+    expect(sameTeamName('Let them eat cake', 'IMPERIUM NOBILITY')).toBe(false);
   });
 });

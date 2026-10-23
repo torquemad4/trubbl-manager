@@ -156,12 +156,30 @@ export function parseFeedMessage(message: FeedMessage, botId: string, slug: stri
   return { kind: 'result', ruling: isRuling, home, away, ...place };
 }
 
+/**
+ * TourPlay's posts give team names in capitals. Turn one into something
+ * readable for a team that has been renamed since the manager last saw it:
+ * "BREWTOWN KEGGER-BOYS" -> "Brewtown Kegger-Boys".
+ */
+export function displayTeamName(shouted: string): string {
+  return shouted
+    .toLowerCase()
+    .replace(/(^|[\s\-\[(\/])([a-z])/g, (_match, before: string, letter: string) => before + letter.toUpperCase());
+}
+
+/** Two names for the same team, ignoring case and spacing. */
+export function sameTeamName(a: string, b: string): boolean {
+  const norm = (value: string) => value.toUpperCase().replace(/\s+/g, ' ').trim();
+  return norm(a) === norm(b);
+}
+
 // ----------------------------------------------------------------- ingest ---
 
 export interface FeedReport {
   read: number;
   results: number;
   schedules: number;
+  renamed: number;
   newFixtures: number;
   newRounds: number;
   skipped: number;
@@ -192,6 +210,7 @@ async function fetchPage(env: Env, channelId: string, after: string): Promise<Fe
 
 interface Lookup {
   coachTeam: Map<string, number>;
+  teamName: Map<number, string>;
   divisionByName: Map<string, number>;
   roundByNumber: Map<number, number>;
 }
@@ -199,15 +218,16 @@ interface Lookup {
 async function lookups(env: Env, seasonId: number): Promise<Lookup> {
   const [teams, divisions, rounds] = await Promise.all([
     env.DB.prepare(
-      `SELECT t.id, c.display_name FROM team t JOIN coach c ON c.id = t.coach_id WHERE t.season_id = ?`,
+      `SELECT t.id, t.name, c.display_name FROM team t JOIN coach c ON c.id = t.coach_id WHERE t.season_id = ?`,
     )
       .bind(seasonId)
-      .all<{ id: number; display_name: string }>(),
+      .all<{ id: number; name: string; display_name: string }>(),
     env.DB.prepare('SELECT id, name FROM division WHERE season_id = ?').bind(seasonId).all<{ id: number; name: string }>(),
     env.DB.prepare('SELECT id, number FROM round WHERE season_id = ?').bind(seasonId).all<{ id: number; number: number }>(),
   ]);
   return {
     coachTeam: new Map((teams.results ?? []).map((t) => [t.display_name.trim().toLowerCase(), t.id])),
+    teamName: new Map((teams.results ?? []).map((t) => [t.id, t.name])),
     divisionByName: new Map((divisions.results ?? []).map((d) => [d.name.trim().toLowerCase(), d.id])),
     roundByNumber: new Map((rounds.results ?? []).map((r) => [r.number, r.id])),
   };
@@ -305,6 +325,7 @@ export async function ingestFeed(env: Env, season: SeasonRow, actor = 'feed'): P
     read: 0,
     results: 0,
     schedules: 0,
+    renamed: 0,
     newFixtures: 0,
     newRounds: 0,
     skipped: 0,
@@ -331,6 +352,18 @@ export async function ingestFeed(env: Env, season: SeasonRow, actor = 'feed'): P
         (await findFixture(env, season.id, item.matchId)) ?? (await createFixture(env, season.id, item, look, report));
       if (!fixture) continue;
       const { home, away } = orient(fixture, item, look);
+
+      // A team renamed on TourPlay since the draw: take the name the post uses.
+      for (const side of [item.home, item.away]) {
+        const teamId = look.coachTeam.get(side.coach.toLowerCase());
+        const stored = teamId === undefined ? undefined : look.teamName.get(teamId);
+        if (teamId === undefined || stored === undefined || sameTeamName(stored, side.team)) continue;
+        const name = displayTeamName(side.team);
+        await env.DB.prepare('UPDATE team SET name = ?, name_provisional = 0 WHERE id = ?').bind(name, teamId).run();
+        look.teamName.set(teamId, name);
+        report.renamed += 1;
+        report.warnings.push(`Renamed "${stored}" to "${name}", as TourPlay now calls it`);
+      }
 
       if (item.kind === 'result') {
         // Casualties are left empty on purpose: the feed cannot give an exact count.
@@ -365,7 +398,7 @@ export async function ingestFeed(env: Env, season: SeasonRow, actor = 'feed'): P
   )
     .bind(nowIso(), season.id)
     .run();
-  if (report.results || report.schedules || report.newFixtures || report.warnings.length) {
+  if (report.results || report.schedules || report.renamed || report.newFixtures || report.warnings.length) {
     await audit(env, actor, 'tourplay.feed', season.tourplay_slug, report);
   }
   return report;
