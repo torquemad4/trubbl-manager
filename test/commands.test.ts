@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { divisionTitle } from '../src/commands.js';
+import { RETIRED_COMMANDS, divisionTitle, resultLine } from '../src/commands.js';
 
 describe('divisionTitle', () => {
   it('leaves a name that already ends in Division alone', () => {
@@ -18,5 +18,18 @@ describe('divisionTitle', () => {
   it('tolerates stray whitespace and case', () => {
     expect(divisionTitle('  Third DIVISION ')).toBe('Third DIVISION');
     expect(divisionTitle(' Third ')).toBe('Third Division');
+  });
+});
+
+
+describe('the slimmed-down command set', () => {
+  it('lists every command that gave answers the feed cannot support', () => {
+    expect(RETIRED_COMMANDS.sort()).toEqual(['extend', 'forfeit', 'link', 'mygame', 'outstanding', 'schedule', 'table']);
+  });
+
+  it('prints a reported result home first', () => {
+    expect(resultLine({ homeTeam: 'Pistachijoes', awayTeam: 'Knights of the Living Dead', homeScore: 1, awayScore: 2 })).toBe(
+      '**Pistachijoes** 1–2 **Knights of the Living Dead**',
+    );
   });
 });

@@ -1,49 +1,56 @@
 # TRUBBL Manager
 
-A league manager for TRUBBL: round windows, chasing, forfeits and rulings, with
-TourPlay imported and Discord wired in. Runs as a single Cloudflare Worker on
-D1, at `trubbl.torquemada.uk`.
+A league helper for TRUBBL: round windows and round announcements, with
+results read from TourPlay's own Discord bot. Runs as a single Cloudflare
+Worker on D1, at `trubbl.torquemada.uk`, with the public rules pack at
+`trubbl-rules.torquemada.uk`.
 
-Rules implemented: **Season VI v1.1**. Section references throughout the code
-point at that document.
+## Why it reads Discord, not TourPlay
 
-## What it does
+Until 29 Sep 2026 the manager read TourPlay's undocumented JSON. TourPlay then
+put an anti-bot proof-of-work challenge in front of that API. Getting past a
+gate an operator has deliberately put up is not something this project does,
+so the TourPlay client was deleted on 23 Oct 2026.
 
-- **Round windows.** Every round gets an open and close date. Lay a whole
-  season out from one start date, then adjust individual rounds. A round drawn
-  on TourPlay after that arrives without dates, and the cron gives it a window
-  running on from the round before (`round_length_days`), so a mid-season draw
-  never needs the layout re-run. Round one is never invented that way.
-- **Chasing.** On a cron it posts the outstanding-games list to Discord at
-  configurable intervals before the deadline (7, 3 and 1 days by default), then
-  daily once a round is overdue, naming the coaches.
-- **Extensions.** Coaches ask with `/trubbl extend`; you grant or refuse in the
-  portal. A granted extension takes that one fixture out of the chase list
-  without moving the round.
-- **Divisions.** Premier, Second and Third (§3.3), imported from TourPlay's
-  categories. Each is scored as its own competition with its own table.
-- **Unplayed games.** The full §3.2 procedure, from the portal or with
-  `/trubbl forfeit`: (a) one coach tried and got no response → 2-0 concession;
-  (b) both tried in good faith → 1-1 draw; (c) neither tried → 0-0 draw. A
-  ruling overrides TourPlay, survives every later sync, and is reversible —
-  the superseded ruling is kept, not deleted.
-- **Standings.** §2.4 scoring in full, including the bonus points, with the
-  real tiebreakers and concessions given tracked per team.
-- **TourPlay import.** Coaches, teams, fixtures and results, on the cron and on
-  demand. Pending registrations are counted so you know who still needs
-  validating.
+What TourPlay still does, officially, is post every match into the league's
+Discord through its own integration (#league-result-input). The manager reads
+those posts with the bot's normal Discord access:
 
-## How the pieces divide
+| Post | What the manager takes from it |
+|---|---|
+| End of the match | final score, by TourPlay match id |
+| Match suspension resolved | an organiser's ruling, with its score |
+| Match scheduled | the date both coaches agreed |
 
-TourPlay is the source of truth for **who is in the league and what the results
-were**. Every `tp_`-prefixed column is a mirror and is overwritten on each sync.
+Each carries the division and round in its footer. In-match events (touchdowns,
+casualties, injuries) are ignored: the end-of-match score is authoritative for
+touchdowns, and counting casualty events disagrees with TourPlay's own figure in
+about a quarter of Season 6 games.
 
-This app owns **everything TourPlay has no concept of**: window dates,
-extensions, chase state, rulings, Discord links, the audit trail.
+## What it does — and what it deliberately no longer does
 
-TourPlay has no admin API and no write API of any kind — its JSON is what its
-own front end fetches. So results are still entered on tourplay.net by the
-coaches or by you. Nothing here writes back to TourPlay, and nothing can.
+- **Results.** Read from the feed every morning, or on demand from the portal.
+  `/trubbl status` lists the results reported this round.
+- **Round windows.** Every round gets an open and close date. Lay a whole season
+  out from one start date, then adjust individual rounds. A round first seen in
+  the feed arrives without dates, and the cron gives it a window running on from
+  the round before (`round_length_days`). Round one is never invented that way.
+- **Round announcements.** One post in the dates channel and one in
+  announcements when a round opens. Rounds open and close by date.
+- **Alarms.** A dead bot token, a failed post, or a feed that cannot be read
+  raises one alarm a day through a webhook (below).
+
+Removed on 23 Oct 2026, because the feed cannot support them correctly:
+
+- **The table**, which needs exact casualty totals for the §2.4 bonus and the
+  net-CAS tiebreak. TourPlay shows the table.
+- **Chasing, overdue posts, `outstanding`, `mygame`, extensions, rulings.**
+  These need the full draw, and the feed only reveals a fixture once it is
+  scheduled or played. Built on a partial draw they accuse coaches of games they
+  have already played, which is what happened between 11 and 23 Oct 2026.
+
+The scoring rules (`src/rules.ts`) are kept, tested, for the self-built system
+that is meant to replace TourPlay.
 
 ## Setup
 
@@ -103,64 +110,31 @@ Finally set the **Interactions Endpoint URL** on the Discord application to
 sending a deliberately bad signature and expecting a 401, which the Worker
 returns.
 
-In the portal's Settings tab, fill in the channel ids (announcements, chase,
-admin) and the admin role id — `/trubbl forfeit` checks that role.
+Give the bot **Message Content** (Developer Portal → Bot → Privileged Gateway
+Intents) and read access to #league-result-input, or it sees TourPlay's posts
+with their content blank. In the portal's Settings tab, fill in the dates and
+announcements channel ids.
 
-### 4. Import the season
+### 4. Connect TourPlay's Discord integration
 
-Open the portal and give it the slug `trubbl-season-7`. That imports divisions,
-coaches, teams, rounds and fixtures. Then go to Rounds, set a start date and a
-window length (14 days per §3.2), and apply it across the season.
-
-Divisions come from TourPlay's categories, ordered as TourPlay lists them —
-Premier first. Check the Coaches tab after the first import and correct any team
-whose division did not come through.
+In TourPlay's organiser settings, connect the competition to the league's
+Discord channel. The manager finds TourPlay's posts in the channel named by
+`tourplay_feed_channel_id`, trusting only the bot user in `tourplay_feed_bot_id`
+(both default to TRUBBL's).
 
 ## Commands
 
 | Command | Who | What |
 |---|---|---|
-| `/trubbl status` | anyone | Where the round stands |
-| `/trubbl mygame` | linked coach | Your fixture and its deadline |
-| `/trubbl outstanding` | anyone | Everything still to play |
-| `/trubbl table` | anyone | The league table |
-| `/trubbl link naf:<n>` | anyone | Link Discord to a TourPlay coach |
-| `/trubbl schedule when:<date>` | linked coach | Note an agreed date |
-| `/trubbl extend days:<n>` | linked coach | Ask for more time |
-| `/trubbl forfeit match:<id> outcome:<a\|b\|c>` | admin role | Rule on an unplayed game (§3.2) |
+| `/trubbl status` | anyone | The round's dates and the results reported so far |
 
-## The scoring, and one thing it does not do
+Any of the retired subcommands still cached in a Discord client gets a reply
+saying it has been retired.
 
-§2.4 pays bonus points on top of the result: one each for 3+ touchdowns scored,
-conceding none, and causing 3+ casualties. A game is worth up to **6** points,
-not 3. Casualties come from TourPlay, so they need logging during the game —
-§2.2 already makes that mandatory.
-
-Tiebreakers are head-to-head, then net TD, then net CAS, then net TD + net CAS.
-Head-to-head is not a total order, so it is applied as a mini-league within each
-group of teams level on points, and anything still level falls through.
-
-**No ruling earns a bonus point**, which is a deliberate departure from the
-letter of the rules. Read literally, the §3.2(c) 0-0 draw pays the "no TDs
-conceded" bonus to both sides: 2 points each for neither coach organising the
-game, against 0 for turning up and losing 0-1. Ignoring a fixture would outscore
-playing one. Rulings therefore pay base points only — (a) 3-0, (b) and (c) 1
-each. If you would rather the rules were followed to the letter, set
-`bonus_shutout_points` to 0 or raise it with the coaches.
-
-## Settings worth understanding
-
-**`auto_forfeit_on_close`** is `false` by default, which suits a league §3.2
-calls "loosely enforced". Turned on, a window expiring with a game unplayed and
-no extension granted applies **§3.2(c)** — a 0-0 draw. It is never (a) or (b),
-because telling those apart means knowing who actually reached out, which only
-the Lord Commissioner can judge. Reversible once you know more.
-
-**`nag_days_before_close`** fires on exact thresholds. A nag missed because the
-cron did not run that day does not pile up and fire later.
+## Posting and alarms
 
 Every Discord post is claimed under a dedupe key before it is sent, so a retried
-or double-fired cron cannot nag the league twice. A post that *fails* releases
+or double-fired cron cannot post the same thing twice. A post that *fails* releases
 its claim and records the failure in the audit log. The "round is open" posts
 are retried on every daily run while the round is open and its window has not
 closed, so an announcement Discord refused goes out once the fault is fixed.
@@ -173,8 +147,9 @@ of each daily run sends one alarm a day through `DISCORD_ALERT_WEBHOOK_URL` —
 a channel webhook, which carries its own credential and so still works when
 the bot token is the thing that died. It mentions the Discord user in the
 `alert_discord_user_id` setting. Other failed posts on a run (a 403 means the
-bot lacks permission in that channel) are included in the same alarm. With no
-webhook configured, the banner is the only warning.
+bot lacks permission in that channel), and a TourPlay feed that could not be
+read, are included in the same alarm. With no webhook configured, the portal
+banners are the only warning.
 
 ```bash
 npx wrangler secret put DISCORD_ALERT_WEBHOOK_URL   # Channel -> Integrations -> Webhooks -> Copy URL
@@ -183,7 +158,7 @@ npx wrangler secret put DISCORD_ALERT_WEBHOOK_URL   # Channel -> Integrations ->
 ## Development
 
 ```bash
-npm test          # the rules: windows, forfeits, standings
+npm test          # windows, the feed parser, scoring, alarms
 npm run typecheck
 npx wrangler d1 migrations apply trubbl --local
 npx wrangler dev --local
@@ -193,20 +168,14 @@ npx wrangler dev --local
 It only applies when `ACCESS_TEAM_DOMAIN` is unset, so it cannot weaken
 production.
 
-TourPlay blocks datacentre IPs, so the import cannot be exercised from a dev
-sandbox — only from the deployed Worker. The admin API has
-`GET /api/tourplay/probe?path=api/tournament/trubbl-season-7` for looking at raw
-TourPlay JSON from production when a field mapping needs checking.
-
 ## Layout
 
 ```
-src/tourplay.ts   read-only TourPlay client
-src/rules.ts      windows, §2.4 scoring, §3.2 rulings, standings — pure, tested
-src/sync.ts       TourPlay -> D1, never clobbering a ruling
-src/scheduler.ts  the cron: sync, move windows on, chase
-src/discord.ts    signature verification and posting
-src/commands.ts   the /trubbl subcommands
+src/feed.ts       TourPlay's Discord posts -> D1: parser (pure, tested) and ingest
+src/rules.ts      windows; §2.4 scoring and §3.2 rulings kept for the replacement
+src/scheduler.ts  the cron: read the feed, move windows on, announce rounds
+src/discord.ts    signature verification, posting, alarms
+src/commands.ts   /trubbl status
 src/auth.ts       Cloudflare Access JWT verification
 src/api.ts        admin REST
 src/ui.ts         the portal, served inline

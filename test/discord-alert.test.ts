@@ -14,12 +14,12 @@ describe('the alarm when the bot stops getting through', () => {
 
   it('does not repeat each 401 as a separate failure when the token is already reported', () => {
     const text = discordAlertText(dead, [{ kind: 'round_open', error: 'Discord 401: Unauthorized' }], null);
-    expect(text).not.toContain('failed on today');
+    expect(text).not.toContain('failed** on today');
   });
 
   it('reports a channel permission failure on its own, with what a 403 means', () => {
     const text = discordAlertText(null, [{ kind: 'nag', error: 'Discord 403: Missing Access' }], null);
-    expect(text).toContain('1 bot post failed');
+    expect(text).toContain('1 thing failed');
     expect(text).toContain('nag: Discord 403: Missing Access');
     expect(text).toContain('View Channel or Send Messages');
     expect(text).not.toContain('<@');
@@ -30,5 +30,13 @@ describe('the alarm when the bot stops getting through', () => {
     expect(parseDiscordAuthError('')).toBeNull();
     expect(parseDiscordAuthError('not json')).toBeNull();
     expect(parseDiscordAuthError('{}')).toBeNull();
+  });
+});
+
+describe('a feed that cannot be read', () => {
+  it('is reported in the same alarm as failed posts', () => {
+    const text = discordAlertText(null, [{ kind: 'reading the TourPlay feed', error: 'Discord 403: Missing Access' }], null);
+    expect(text).toContain('1 thing failed');
+    expect(text).toContain('reading the TourPlay feed');
   });
 });

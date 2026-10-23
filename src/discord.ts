@@ -225,14 +225,14 @@ export function discordAlertText(
     lines.push(
       `**commish-bot cannot post to Discord.** Discord has rejected its token since ${authError.since.slice(0, 10)}` +
         ` (${authError.error.slice(0, 120)}).`,
-      'Nothing the bot posts is getting through: round announcements, chase nags, rulings, extension requests.',
+      'Nothing the bot posts is getting through, including round announcements.',
       'Fix: put the current bot token into the Worker secret `DISCORD_BOT_TOKEN`. ' +
         'Missed round announcements go out by themselves on the next daily run.',
     );
   }
   const others = failures.filter((f) => !authError || !/^Discord 401|not set/.test(f.error));
   if (others.length > 0) {
-    lines.push(`**${others.length} bot post${others.length === 1 ? '' : 's'} failed** on today's run:`);
+    lines.push(`**${others.length} thing${others.length === 1 ? '' : 's'} failed** on today's run:`);
     for (const failure of others.slice(0, 10)) {
       lines.push(`• ${failure.kind}: ${failure.error.slice(0, 160)}`);
     }

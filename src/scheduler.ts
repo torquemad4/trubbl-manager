@@ -1,44 +1,39 @@
-// What runs on the cron: pull TourPlay, move windows on, and chase people.
+// What runs on the cron: read TourPlay's Discord feed, keep the round windows
+// moving, and say when a round opens.
+//
+// Since 23 Oct 2026 the bot no longer chases anyone. Chasing needs the full
+// draw, and TourPlay's feed only reveals a fixture once it is scheduled or
+// played, so any "still to play" list would be built on missing data — which
+// is exactly how the bot spent a week calling played games overdue. What it
+// can still do correctly is report results and keep the calendar.
 //
 // Every message goes out through announceOnce, so a cron that fires twice, or
-// a retry after a half-failed run, cannot nag the league twice for the same
-// thing. That matters more than it sounds: the failure mode of a chaser bot is
-// that people mute it.
+// a retry after a half-failed run, cannot post the same thing twice.
 
-import { activeSeason, audit, nagDaysFrom, nowIso, settings } from './db.js';
+import { activeSeason, audit, settings } from './db.js';
 import {
   alertOwner,
   announceOnce,
   DISCORD_AUTH_SETTING,
   discordAlertText,
-  mention,
   parseDiscordAuthError,
 } from './discord.js';
-import {
-  currentRound,
-  divisionsFor,
-  fixturesForRound,
-  outstanding,
-  roundsFor,
-  ruleFixture,
-  type DivisionRow,
-  type FixtureView,
-  type RoundRow,
-} from './league.js';
-import { followOnWindows, openAnnouncementDue, windowState } from './rules.js';
-import { recordSyncFailure, syncSeason } from './sync.js';
+import { ingestFeed, recordFeedFailure } from './feed.js';
+import { currentRound, roundsFor } from './league.js';
+import { followOnWindows, openAnnouncementDue } from './rules.js';
 import type { Env } from './types.js';
 
 export interface TickReport {
+  /** True when TourPlay's feed was read successfully on this run. */
   synced: boolean;
   syncError: string | null;
+  /** Results and schedules applied from the feed on this run. */
+  results: number;
+  schedules: number;
   /** Rounds that arrived without dates and were given a window running on from the round before. */
   windowsAdded: number[];
   opened: number[];
   closed: number[];
-  settled: number[];
-  nagged: string[];
-  autoForfeited: number;
   /** A dead bot token, or failed posts, found on this run. Null when Discord is healthy. */
   discordProblem: string | null;
   /** What happened to the alarm about it, if one was needed. */
@@ -47,64 +42,19 @@ export interface TickReport {
 
 const DAY_MS = 86_400_000;
 
-/** The deadline that applies to one fixture, after any granted extension. */
-function effectiveDeadline(round: RoundRow, fixture: FixtureView): string | null {
-  if (!round.closes_at) return fixture.extendedTo;
-  if (!fixture.extendedTo) return round.closes_at;
-  return Date.parse(fixture.extendedTo) > Date.parse(round.closes_at) ? fixture.extendedTo : round.closes_at;
-}
-
 function dayStamp(now: Date): string {
   return now.toISOString().slice(0, 10);
-}
-
-/**
- * Split a chase list by division, so Premier coaches are nagged in the Premier
- * games-setup channel rather than everyone being nagged everywhere. Anything
- * with no division falls into one bucket keyed null and goes to the league-wide
- * channel.
- */
-function byDivision(fixtures: FixtureView[]): Map<number | null, FixtureView[]> {
-  const groups = new Map<number | null, FixtureView[]>();
-  for (const fixture of fixtures) {
-    const key = fixture.divisionId ?? null;
-    const list = groups.get(key);
-    if (list) list.push(fixture);
-    else groups.set(key, [fixture]);
-  }
-  return groups;
-}
-
-function channelFor(
-  divisionId: number | null,
-  divisions: Map<number, DivisionRow>,
-  fallback: string,
-): string {
-  if (divisionId === null) return fallback;
-  return divisions.get(divisionId)?.chase_channel_id || fallback;
-}
-
-function divisionLabel(divisionId: number | null, divisions: Map<number, DivisionRow>): string {
-  if (divisionId === null) return '';
-  const name = divisions.get(divisionId)?.name;
-  return name ? ` — ${name}` : '';
-}
-
-function describe(fixture: FixtureView): string {
-  const scheduled = fixture.scheduledFor ? ` _(booked in)_` : '';
-  return `• **${fixture.homeTeam}** v **${fixture.awayTeam}** — ${mention(fixture.homeDiscordId, fixture.homeCoach)} v ${mention(fixture.awayDiscordId, fixture.awayCoach)}${scheduled}`;
 }
 
 export async function tick(env: Env, now = new Date()): Promise<TickReport> {
   const report: TickReport = {
     synced: false,
     syncError: null,
+    results: 0,
+    schedules: 0,
     windowsAdded: [],
     opened: [],
     closed: [],
-    settled: [],
-    nagged: [],
-    autoForfeited: 0,
     discordProblem: null,
     alert: null,
   };
@@ -114,44 +64,31 @@ export async function tick(env: Env, now = new Date()): Promise<TickReport> {
   const season = await activeSeason(env);
   if (!season) return report;
 
-  // 1. Pull TourPlay. A failure here must not stop the window work: the
-  //    deadlines are ours and still need enforcing even if TourPlay is down.
+  // 1. Read TourPlay's feed. A failure here must not stop the calendar work.
   try {
-    await syncSeason(env, season, 'cron');
+    const feed = await ingestFeed(env, season, 'cron');
     report.synced = true;
+    report.results = feed.results;
+    report.schedules = feed.schedules;
   } catch (cause) {
     report.syncError = String(cause);
-    await recordSyncFailure(env, season, cause);
+    await recordFeedFailure(env, season, cause);
   }
 
   const map = await settings(env);
   const leagueName = map['league_name'] ?? 'TRUBBL';
   const announceChannel = map['announce_channel_id'] ?? '';
-  const chaseChannel = map['chase_channel_id'] || announceChannel;
-  const nagDays = nagDaysFrom(map);
   const datesChannel = map['dates_channel_id'] ?? '';
-  // 0 or blank switches the dates-channel reminder off; the round-open post
-  // in that channel is unaffected.
-  const datesReminderDays = Number(map['dates_reminder_days'] ?? 0);
-  const closingSoon = Number(map['closing_soon_days'] ?? 3) || 3;
-  const autoForfeit = (map['auto_forfeit_on_close'] ?? 'false') === 'true';
 
-  const divisions = new Map((await divisionsFor(env, season.id)).map((d) => [d.id, d]));
-
-  // 1b. A round drawn on TourPlay since the windows were laid out has just
-  //     been created by the sync with no dates. Give it a window running on
-  //     from the round before, so a mid-season draw never needs the layout
-  //     re-run by hand. Round one is left alone: the season start is a decision.
+  // 2. A round the feed has just revealed arrives with no dates. Give it a
+  //    window running on from the round before. Round one is left alone: the
+  //    season start is a decision.
   const roundLength = Number(map['round_length_days'] ?? 14) || 14;
   const followOn = followOnWindows(await roundsFor(env, season.id), roundLength);
   if (followOn.length > 0) {
     await env.DB.batch(
       followOn.map(({ round, opens_at, closes_at }) =>
-        env.DB.prepare('UPDATE round SET opens_at = ?, closes_at = ? WHERE id = ?').bind(
-          opens_at,
-          closes_at,
-          round.id,
-        ),
+        env.DB.prepare('UPDATE round SET opens_at = ?, closes_at = ? WHERE id = ?').bind(opens_at, closes_at, round.id),
       ),
     );
     report.windowsAdded = followOn.map(({ round }) => round.number);
@@ -162,26 +99,30 @@ export async function tick(env: Env, now = new Date()): Promise<TickReport> {
   }
 
   for (const round of await roundsFor(env, season.id)) {
-    // 2. Open a round whose start date has arrived.
+    // 3. Open a round whose start date has arrived.
     if (round.status === 'pending' && round.opens_at && Date.parse(round.opens_at) <= now.getTime()) {
       await env.DB.prepare("UPDATE round SET status = 'open', opened_at = ? WHERE id = ?")
-        .bind(nowIso(), round.id)
+        .bind(now.toISOString().replace(/\.\d{3}Z$/, 'Z'), round.id)
         .run();
       round.status = 'open';
       report.opened.push(round.number);
     }
 
-    if (round.status !== 'open') continue;
+    // 4. Close a round whose window has ended. Nothing is posted: whether a
+    //    game was played is TourPlay's to say, not the bot's.
+    if (round.status === 'open' && round.closes_at && Date.parse(round.closes_at) < now.getTime()) {
+      await env.DB.prepare("UPDATE round SET status = 'closed', closed_at = ? WHERE id = ?")
+        .bind(now.toISOString().replace(/\.\d{3}Z$/, 'Z'), round.id)
+        .run();
+      round.status = 'closed';
+      report.closed.push(round.number);
+      continue;
+    }
 
-    const fixtures = await fixturesForRound(env, round.id);
-
-    // 2b. The "round is open" posts. Tried on the run that opens the round,
-    //     and again on every run after for as long as the round is open, so a
-    //     post Discord refused — a dead token, a missing channel permission —
-    //     goes out once the fault is fixed rather than being lost for good.
-    //     Each is deduped, so one that already went out is never repeated.
+    // 5. The "round is open" posts: dates only. Tried on the run that opens
+    //    the round and on every run after while it is open, so a post Discord
+    //    refused goes out once the fault is fixed. Deduped, never repeated.
     if (openAnnouncementDue(round.status, round.closes_at, now)) {
-      // The dates channel is the standing record of when each round runs.
       if (datesChannel) {
         await announceOnce(
           env,
@@ -191,11 +132,9 @@ export async function tick(env: Env, now = new Date()): Promise<TickReport> {
           `**Round ${round.number}** is open.\n` +
             (round.opens_at ? `Opens ${formatDate(round.opens_at)}\n` : '') +
             (round.closes_at ? `**Closes ${formatDate(round.closes_at)}**\n` : '') +
-            `\n${fixtures.length} fixture${fixtures.length === 1 ? '' : 's'} to play. ` +
-            `Report your results on TourPlay as soon as you have played.`,
+            `\nReport your results on TourPlay as soon as you have played.`,
         );
       }
-
       await announceOnce(
         env,
         `round-open:${round.id}`,
@@ -203,154 +142,20 @@ export async function tick(env: Env, now = new Date()): Promise<TickReport> {
         announceChannel,
         `**${leagueName} — Round ${round.number} is open.**\n` +
           (round.closes_at ? `Get your games played by **${formatDate(round.closes_at)}**.\n` : '') +
-          `${fixtures.length} fixture${fixtures.length === 1 ? '' : 's'} to play.\n` +
-          `Use \`/trubbl mygame\` to see yours.`,
-      );
-    }
-
-    const left = outstanding(fixtures);
-    const view = windowState(now, round.opens_at, round.closes_at, null, closingSoon);
-
-    // 3. Nag on the configured days before the deadline, one post per division.
-    if (view.daysRemaining !== null && nagDays.includes(view.daysRemaining) && left.length > 0) {
-      for (const [divisionId, group] of byDivision(left)) {
-        const key = `nag:${round.id}:${divisionId ?? 'none'}:${view.daysRemaining}`;
-        const result = await announceOnce(
-          env,
-          key,
-          'nag',
-          channelFor(divisionId, divisions, chaseChannel),
-          `**Round ${round.number}${divisionLabel(divisionId, divisions)} — ` +
-            `${view.daysRemaining} day${view.daysRemaining === 1 ? '' : 's'} left.**\n` +
-            `${group.length} game${group.length === 1 ? '' : 's'} still to play:\n` +
-            group.map(describe).join('\n'),
-        );
-        if (!result.skipped) {
-          report.nagged.push(key);
-          await markChased(env, group, view.daysRemaining <= 1 ? 'chased' : 'nudged');
-        }
-      }
-    }
-
-    // 3b. A single reminder in the dates channel a few days out, naming the
-    //     coaches on both sides of every game still unreported.
-    if (
-      datesChannel &&
-      datesReminderDays > 0 &&
-      view.daysRemaining === datesReminderDays &&
-      left.length > 0
-    ) {
-      const coaches = new Set<string>();
-      for (const fixture of left) {
-        coaches.add(mention(fixture.homeDiscordId, fixture.homeCoach));
-        coaches.add(mention(fixture.awayDiscordId, fixture.awayCoach));
-      }
-      const result = await announceOnce(
-        env,
-        `dates-reminder:${round.id}`,
-        'dates_reminder',
-        datesChannel,
-        `**Round ${round.number} closes in ${datesReminderDays} days.**\n` +
-          `${left.length} game${left.length === 1 ? '' : 's'} not yet reported:\n` +
-          left.map(describe).join('\n') +
-          `\n\n${[...coaches].join(' ')} — please get these played and reported, ` +
-          `or let me know if you need longer.`,
-      );
-      if (!result.skipped) report.nagged.push(`dates-reminder:${round.id}`);
-    }
-
-    // 4. Past the deadline: chase daily, but leave alone anyone holding a
-    //    granted extension that has not itself run out.
-    if (view.state === 'overdue') {
-      const stillOverdue = left.filter((fixture) => {
-        const deadline = effectiveDeadline(round, fixture);
-        return !deadline || Date.parse(deadline) <= now.getTime();
-      });
-
-      for (const [divisionId, group] of byDivision(stillOverdue)) {
-        const key = `overdue:${round.id}:${divisionId ?? 'none'}:${dayStamp(now)}`;
-        const result = await announceOnce(
-          env,
-          key,
-          'overdue',
-          channelFor(divisionId, divisions, chaseChannel),
-          `**Round ${round.number}${divisionLabel(divisionId, divisions)} is past its deadline.**\n` +
-            `${group.length} game${group.length === 1 ? '' : 's'} outstanding:\n` +
-            group.map(describe).join('\n') +
-            `\n\nPlay it, or ask for an extension with \`/trubbl extend\`.`,
-        );
-        if (!result.skipped) {
-          report.nagged.push(key);
-          await markChased(env, group, 'escalated');
-        }
-      }
-
-      // 5. Close the round once nothing is outstanding but extensions.
-      const blocking = left.filter((fixture) => {
-        const deadline = effectiveDeadline(round, fixture);
-        return !deadline || Date.parse(deadline) <= now.getTime();
-      });
-
-      if (autoForfeit && blocking.length > 0) {
-        // §3.2(c): the window expired with nobody having asked for more time and
-        // no evidence either coach tried, which is the "no attempt" outcome — a
-        // 0-0 draw. It is never (a) or (b), because deciding those needs to know
-        // who actually reached out, which only the Lord Commissioner can judge.
-        // Reversible in the portal once he knows more.
-        for (const fixture of blocking) {
-          await ruleFixture(env, fixture.id, 'no_attempt', null, 'Round window expired', 'cron');
-          report.autoForfeited += 1;
-        }
-        await announceOnce(
-          env,
-          `autoforfeit:${round.id}:${dayStamp(now)}`,
-          'auto_forfeit',
-          announceChannel,
-          `**Round ${round.number} — ${blocking.length} game${blocking.length === 1 ? '' : 's'} ruled 0-0** ` +
-            `on the expiry of the window.\n` +
-            blocking.map(describe).join('\n') +
-            `\n\nIf that is wrong, tell an admin — it can be re-ruled.`,
-        );
-      }
-
-      const remaining = autoForfeit ? 0 : blocking.length;
-      if (remaining === 0) {
-        await env.DB.prepare("UPDATE round SET status = 'closed', closed_at = ? WHERE id = ?")
-          .bind(nowIso(), round.id)
-          .run();
-        report.closed.push(round.number);
-        await audit(env, 'cron', 'round.close', `round:${round.id}`);
-      }
-    }
-
-    // 6. A round with every game in is done, deadline or no deadline.
-    if (left.length === 0 && fixtures.length > 0) {
-      await env.DB.prepare("UPDATE round SET status = 'settled', settled_at = ? WHERE id = ?")
-        .bind(nowIso(), round.id)
-        .run();
-      report.settled.push(round.number);
-      await announceOnce(
-        env,
-        `round-settled:${round.id}`,
-        'round_settled',
-        announceChannel,
-        `**Round ${round.number} is complete.** Every game is in. \`/trubbl table\` for the standings.`,
+          `Report your results on TourPlay.`,
       );
     }
   }
 
-  // 5. If the bot is not getting through, say so somewhere a person will see
-  //    it. A failed post only lands in the audit log, which nobody reads; a
-  //    dead token fails every post silently until someone notices the quiet.
-  //    The alarm goes by webhook, which does not depend on the bot token, and
-  //    at most once a day, so it nags until fixed without flooding.
-  await raiseDiscordAlarm(env, report, startedAt, now);
+  // 6. If the bot is not getting through, or cannot read TourPlay's feed, say
+  //    so somewhere a person will see it, at most once a day.
+  await raiseAlarm(env, report, startedAt, now);
 
   await audit(env, 'cron', 'tick', season.tourplay_slug, report);
   return report;
 }
 
-async function raiseDiscordAlarm(env: Env, report: TickReport, startedAt: string, now: Date): Promise<void> {
+async function raiseAlarm(env: Env, report: TickReport, startedAt: string, now: Date): Promise<void> {
   const map = await settings(env);
   const authError = parseDiscordAuthError(map[DISCORD_AUTH_SETTING]);
   const { results } = await env.DB.prepare(
@@ -367,12 +172,15 @@ async function raiseDiscordAlarm(env: Env, report: TickReport, startedAt: string
     }
     return { kind: row.subject ?? 'post', error };
   });
+  // A feed that cannot be read is the same kind of silent failure as a dead
+  // token: the bot carries on, knowing nothing new. Report it the same way.
+  if (report.syncError) failures.push({ kind: 'reading the TourPlay feed', error: report.syncError });
 
   if (!authError && failures.length === 0) return;
 
   report.discordProblem = authError
     ? `bot token rejected since ${authError.since}: ${authError.error.slice(0, 120)}`
-    : `${failures.length} post${failures.length === 1 ? '' : 's'} failed`;
+    : `${failures.length} problem${failures.length === 1 ? '' : 's'}: ${failures.map((f) => f.kind).join(', ')}`;
 
   const mentionUserId = map['alert_discord_user_id'] || null;
   report.alert = await alertOwner(
@@ -380,20 +188,6 @@ async function raiseDiscordAlarm(env: Env, report: TickReport, startedAt: string
     `alert:discord:${dayStamp(now)}`,
     discordAlertText(authError, failures, mentionUserId),
     mentionUserId,
-  );
-}
-
-async function markChased(env: Env, fixtures: FixtureView[], state: string): Promise<void> {
-  if (fixtures.length === 0) return;
-  const stamp = nowIso();
-  await env.DB.batch(
-    fixtures.map((fixture) =>
-      env.DB.prepare('UPDATE fixture SET chase_state = ?, last_chased_at = ? WHERE id = ?').bind(
-        state,
-        stamp,
-        fixture.id,
-      ),
-    ),
   );
 }
 

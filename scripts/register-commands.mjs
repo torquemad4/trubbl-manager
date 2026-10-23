@@ -14,73 +14,15 @@ if (!appId || !token) {
   process.exit(1);
 }
 
-const STRING = 3;
-const INTEGER = 4;
 const SUBCOMMAND = 1;
 
+// Since 23 Oct 2026 the bot reads results from TourPlay's Discord feed and
+// offers only status. Registering this list replaces the old eight
+// subcommands, so they vanish from Discord's menu.
 const command = {
   name: 'trubbl',
-  description: 'TRUBBL league — rounds, fixtures and deadlines',
-  options: [
-    { type: SUBCOMMAND, name: 'status', description: 'Where the current round stands' },
-    { type: SUBCOMMAND, name: 'mygame', description: 'Your fixture this round and its deadline' },
-    { type: SUBCOMMAND, name: 'outstanding', description: 'Every game still to play this round' },
-    { type: SUBCOMMAND, name: 'table', description: 'The league table' },
-    {
-      type: SUBCOMMAND,
-      name: 'link',
-      description: 'Link your Discord account to your TourPlay coach',
-      options: [
-        { type: INTEGER, name: 'naf', description: 'Your NAF number', required: false },
-        { type: STRING, name: 'name', description: 'Your TourPlay coach name, if you have no NAF number', required: false },
-      ],
-    },
-    {
-      type: SUBCOMMAND,
-      name: 'schedule',
-      description: 'Note the date you have agreed for your game',
-      options: [{ type: STRING, name: 'when', description: 'YYYY-MM-DD or YYYY-MM-DD HH:MM', required: true }],
-    },
-    {
-      type: SUBCOMMAND,
-      name: 'extend',
-      description: 'Ask for more time on your fixture',
-      options: [
-        { type: INTEGER, name: 'days', description: 'How many extra days (1–28)', required: true },
-        { type: STRING, name: 'reason', description: 'Why', required: false },
-      ],
-    },
-    {
-      type: SUBCOMMAND,
-      name: 'forfeit',
-      description: 'Lord Commissioner: rule on a game that never got played (§3.2)',
-      options: [
-        { type: INTEGER, name: 'match', description: 'Fixture id, from the portal', required: true },
-        {
-          type: STRING,
-          name: 'outcome',
-          description: 'Which of the three §3.2 outcomes applies',
-          required: true,
-          choices: [
-            { name: '(a) one coach tried, no response — 2-0', value: 'concession' },
-            { name: '(b) both tried, no agreement — 1-1', value: 'no_agreement' },
-            { name: '(c) neither tried — 0-0', value: 'no_attempt' },
-          ],
-        },
-        {
-          type: STRING,
-          name: 'side',
-          description: 'For (a) only: the coach who did not respond',
-          required: false,
-          choices: [
-            { name: 'home', value: 'home' },
-            { name: 'away', value: 'away' },
-          ],
-        },
-        { type: STRING, name: 'reason', description: 'Why', required: false },
-      ],
-    },
-  ],
+  description: 'TRUBBL league — round dates and results',
+  options: [{ type: SUBCOMMAND, name: 'status', description: 'Where the current round stands, and results so far' }],
 };
 
 const url = guildId

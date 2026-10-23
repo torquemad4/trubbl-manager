@@ -58,8 +58,6 @@ ${FONT_LINKS}
   <section id="tab-preseason" hidden></section>
   <section id="tab-rounds" hidden></section>
   <section id="tab-fixtures" hidden></section>
-  <section id="tab-extensions" hidden></section>
-  <section id="tab-table" hidden></section>
   <section id="tab-coaches" hidden></section>
   <section id="tab-settings" hidden></section>
   <section id="tab-audit" hidden></section>
@@ -67,9 +65,8 @@ ${FONT_LINKS}
 <div id="toast"></div>
 <script>
 var TABS = [
-  ['dashboard', 'Dashboard'], ['preseason', 'Pre-season'], ['rounds', 'Rounds'], ['fixtures', 'Fixtures'],
-  ['extensions', 'Extensions'], ['table', 'Table'], ['coaches', 'Coaches'],
-  ['settings', 'Settings'], ['audit', 'Audit']
+  ['dashboard', 'Dashboard'], ['preseason', 'Pre-season'], ['rounds', 'Rounds'], ['fixtures', 'Results'],
+  ['coaches', 'Coaches'], ['settings', 'Settings'], ['audit', 'Audit']
 ];
 var current = 'dashboard';
 
@@ -143,8 +140,6 @@ async function load(name) {
     if (name === 'preseason') return await loadPreseason();
     if (name === 'rounds') return await loadRounds();
     if (name === 'fixtures') return await loadFixtures();
-    if (name === 'extensions') return await loadExtensions();
-    if (name === 'table') return await loadTable();
     if (name === 'coaches') return await loadCoaches();
     if (name === 'settings') return await loadSettings();
     if (name === 'audit') return await loadAudit();
@@ -174,56 +169,56 @@ async function loadDashboard() {
   }
 
   document.getElementById('season').textContent = data.season.name + ' · ' + data.season.tourplay_slug;
-  var counts = data.counts;
   var round = data.round;
+  var reported = data.reported || [];
 
   var html = '';
   if (data.discord && data.discord.authError) {
     html += '<div class="card" style="border-color:var(--danger)"><h2 style="color:var(--danger)">The bot cannot post to Discord</h2>' +
       '<p>Discord has rejected commish-bot\'s token since ' + day(data.discord.authError.since) +
-      ' (' + esc(data.discord.authError.error) + '). Nothing the bot posts is getting through: round announcements, chase nags, rulings, extension requests.</p>' +
+      ' (' + esc(data.discord.authError.error) + '). Nothing the bot posts is getting through, including round announcements.</p>' +
       '<p class="note">Fix: put the current bot token into the Worker secret <code>DISCORD_BOT_TOKEN</code>. Missed round announcements go out on the next daily run. ' +
       (data.discord.alertWebhook ? 'Alarms are going to the alert webhook.' : 'No alert webhook is configured, so this banner is the only warning.') +
       '</p></div>';
   }
 
+  var lastRead = data.season.last_synced_at;
+  var stale = !lastRead || (Date.now() - new Date(lastRead).getTime()) > 36 * 3600 * 1000;
+  if (data.season.last_sync_error || stale) {
+    html += '<div class="card" style="border-color:var(--danger)"><h2 style="color:var(--danger)">TourPlay\'s feed is not being read</h2>' +
+      '<p>Last good read ' + day(lastRead) + '.' +
+      (data.season.last_sync_error ? ' Last error: ' + esc(data.season.last_sync_error) : '') + '</p>' +
+      '<p class="note">Results come from TourPlay\'s own bot in #league-result-input. Until this clears, ' +
+      'results reported on TourPlay will not appear here or in <code>/trubbl status</code>.</p></div>';
+  }
+
   html += '<div class="tiles">' +
     '<div class="tile"><div class="n">' + (round ? round.number : '—') + '</div><div class="k">Round</div></div>' +
-    '<div class="tile"><div class="n">' + counts.played + '/' + counts.fixtures + '</div><div class="k">Played</div></div>' +
-    '<div class="tile"><div class="n">' + counts.outstanding + '</div><div class="k">Outstanding</div></div>' +
-    '<div class="tile"><div class="n">' + counts.pendingExtensions + '</div><div class="k">Extension requests</div></div>' +
+    '<div class="tile"><div class="n">' + reported.length + '</div><div class="k">Results reported this round</div></div>' +
     '</div>';
 
   html += '<div class="card"><h2>Round ' + (round ? round.number : '') + ' ' + windowPill(data.window) + '</h2>' +
     '<p class="muted">Opens ' + day(round && round.opens_at) + ' · closes ' + day(round && round.closes_at) +
     ' · status <strong>' + esc(round ? round.status : '') + '</strong></p>' +
-    '<div class="row"><button class="act" id="sync">Sync TourPlay</button>' +
-    '<button class="act" id="chase">Post chase list to Discord</button>' +
+    '<div class="row"><button class="act" id="sync">Read TourPlay\'s feed now</button>' +
     '<button class="act" id="runtick">Run the scheduler now</button></div>' +
-    '<p class="note">Last synced ' + day(data.season.last_synced_at) +
-    (data.season.last_sync_error ? ' · <span style="color:var(--danger)">' + esc(data.season.last_sync_error) + '</span>' : '') +
-    '</p></div>';
+    '<p class="note">TourPlay\'s feed last read ' + day(lastRead) + '. The scheduler reads it every morning at 08:00 UTC.</p></div>';
 
-  if (data.outstanding.length) {
-    html += '<div class="card"><h2>Still to play</h2><table><tbody>' +
-      data.outstanding.map(function (f) {
-        return '<tr><td>' + esc(f.homeTeam) + ' <span class="muted">v</span> ' + esc(f.awayTeam) + '</td>' +
-          '<td class="muted">' + esc(f.homeCoach) + ' v ' + esc(f.awayCoach) + '</td>' +
-          '<td class="muted">' + (f.scheduledFor ? 'booked ' + day(f.scheduledFor) : f.chaseState) + '</td></tr>';
+  if (reported.length) {
+    html += '<div class="card"><h2>Results reported this round</h2><table><tbody>' +
+      reported.map(function (f) {
+        return '<tr><td>' + esc(f.divisionName || '') + '</td><td>' + esc(f.homeTeam) + ' <strong>' + f.homeScore + '–' + f.awayScore +
+          '</strong> ' + esc(f.awayTeam) + '</td><td class="muted">' + esc(f.homeCoach) + ' v ' + esc(f.awayCoach) + '</td></tr>';
       }).join('') + '</tbody></table></div>';
   }
   el.innerHTML = html;
 
   document.getElementById('sync').onclick = async function () {
-    try { toast('Syncing…'); var r = await post('/api/sync'); toast('Synced ' + r.fixtures + ' fixtures, ' + r.coaches + ' coaches.'); load('dashboard'); }
-    catch (error) { toast(error.message); }
-  };
-  document.getElementById('chase').onclick = async function () {
-    try { var r = await post('/api/chase'); toast(r.posted ? 'Posted.' : ('Not posted: ' + (r.reason || r.error))); }
+    try { toast('Reading…'); var r = await post('/api/sync'); toast('Read ' + r.read + ' posts: ' + r.results + ' results, ' + r.schedules + ' dates.'); load('dashboard'); }
     catch (error) { toast(error.message); }
   };
   document.getElementById('runtick').onclick = async function () {
-    try { var r = await post('/api/tick'); toast('Done. Opened ' + r.opened.length + ', closed ' + r.closed.length + ', nagged ' + r.nagged.length + '.'); load('dashboard'); }
+    try { var r = await post('/api/tick'); toast('Done. Opened ' + r.opened.length + ', closed ' + r.closed.length + '.'); load('dashboard'); }
     catch (error) { toast(error.message); }
   };
 }
@@ -294,7 +289,7 @@ async function loadRounds() {
     'people get set up. Individual dates can be changed below afterwards.</p></div>';
 
   html += '<div class="card"><h2>Rounds</h2><table><thead><tr><th>#</th><th>Opens</th><th>Closes</th>' +
-    '<th>Status</th><th>Games</th><th></th></tr></thead><tbody>' +
+    '<th>Status</th><th>Results</th><th></th></tr></thead><tbody>' +
     data.rounds.map(function (r) {
       return '<tr data-round="' + r.id + '">' +
         '<td>' + r.number + '</td>' +
@@ -304,7 +299,7 @@ async function loadRounds() {
           ['pending', 'open', 'closed', 'settled'].map(function (s) {
             return '<option value="' + s + '"' + (s === r.status ? ' selected' : '') + '>' + s + '</option>';
           }).join('') + '</select></td>' +
-        '<td class="muted">' + (r.total - r.outstanding) + '/' + r.total + '</td>' +
+        '<td class="muted">' + r.reported + ' reported</td>' +
         '<td><button class="act saveround">Save</button></td></tr>';
     }).join('') + '</tbody></table></div>';
   el.innerHTML = html;
@@ -350,124 +345,31 @@ async function loadFixtures() {
       return '<option value="' + r.id + '"' + (r.id === chosen ? ' selected' : '') + '>Round ' + r.number + '</option>';
     }).join('') + '</select></label></div></div>';
 
-  html += '<div class="card"><h2>Fixtures</h2><table><thead><tr><th>#</th><th>Division</th><th>Match</th><th>Result</th>' +
-    '<th>Status</th><th>Rule</th></tr></thead><tbody>' +
+  html += '<div class="card"><h2>Fixtures and results</h2><table><thead><tr><th>Division</th><th>Match</th><th>Result</th>' +
+    '<th>Status</th></tr></thead><tbody>' +
     data.fixtures.map(function (f) {
-      var score = (f.homeScore === null ? '–' : f.homeScore) + ' : ' + (f.awayScore === null ? '–' : f.awayScore);
-      return '<tr data-fixture="' + f.id + '">' +
-        '<td class="muted">' + f.id + '</td>' +
-        '<td class="muted">' + esc(f.divisionName || (f.isFriendly ? 'inter-div' : '\u2014')) + '</td>' +
+      var score = f.status === 'played' ? f.homeScore + ' : ' + f.awayScore : '\u2014';
+      return '<tr>' +
+        '<td class="muted">' + esc(f.divisionName || '\u2014') + '</td>' +
         '<td>' + esc(teamLabel(f.homeTeam, f.homeTeamProvisional, f.homeCoach)) +
           ' <span class="muted">v</span> ' +
           esc(teamLabel(f.awayTeam, f.awayTeamProvisional, f.awayCoach)) +
           '<div class="muted" style="font-size:12px">' + esc(f.homeCoach) + ' v ' + esc(f.awayCoach) + '</div></td>' +
         '<td>' + score + '</td>' +
         '<td><span class="pill">' + esc(f.status.replace(/_/g, ' ')) + '</span>' +
-          (f.isFriendly ? '<div class="muted" style="font-size:12px">friendly \u2014 no points</div>' : '') +
-          (f.rulingReason ? '<div class="muted" style="font-size:12px">' + esc(f.rulingReason) + '</div>' : '') + '</td>' +
-        '<td><div class="row">' +
-          '<select class="kind">' +
-            '<option value="concession">(a) one tried, no response \u2014 2-0</option>' +
-            '<option value="no_agreement">(b) both tried, no agreement \u2014 1-1</option>' +
-            '<option value="no_attempt">(c) neither tried \u2014 0-0</option>' +
-            '<option value="double_forfeit">double forfeit \u2014 0-0, no points</option>' +
-            '<option value="void">void \u2014 does not count</option></select>' +
-          '<select class="fault"><option value="home">home did not respond</option>' +
-            '<option value="away">away did not respond</option></select>' +
-          '<input class="reason" placeholder="reason" style="width:140px">' +
-          '<button class="act rule">Apply</button>' +
-          (f.rulingKind ? '<button class="act danger revert">Undo</button>' : '') +
-        '</div></td></tr>';
+          (f.scheduledFor && f.status !== 'played' ? '<div class="muted" style="font-size:12px">' + day(f.scheduledFor) + '</div>' : '') +
+        '</td></tr>';
     }).join('') + '</tbody></table>' +
-    '<p class="note">A ruling overrides whatever TourPlay says and survives every later sync. Undo hands the fixture back to TourPlay.</p></div>';
+    '<p class="note">Results and agreed dates come from TourPlay\'s own posts in #league-result-input. ' +
+    'A fixture from a round drawn after 29 September only appears here once it has been scheduled or played on TourPlay, ' +
+    'so this list is not the full draw. TourPlay holds the draw and the table.</p></div>';
   el.innerHTML = html;
 
   document.getElementById('pickround').onchange = function (event) {
     window.__round = Number(event.target.value);
     load('fixtures');
   };
-  el.querySelectorAll('.rule').forEach(function (button) {
-    button.onclick = async function () {
-      var row = button.closest('tr');
-      try {
-        var kind = row.querySelector('.kind').value;
-        // Only a concession names a side; (b) and (c) are draws with nobody at fault.
-        var needsFault = kind === 'concession' || kind === 'forfeit';
-        await post('/api/fixtures/' + row.getAttribute('data-fixture') + '/rule', {
-          kind: kind,
-          atFault: needsFault ? row.querySelector('.fault').value : null,
-          reason: row.querySelector('.reason').value
-        });
-        toast('Ruled, and announced in Discord.');
-        load('fixtures');
-      } catch (error) { toast(error.message); }
-    };
-  });
-  el.querySelectorAll('.revert').forEach(function (button) {
-    button.onclick = async function () {
-      var row = button.closest('tr');
-      try { await post('/api/fixtures/' + row.getAttribute('data-fixture') + '/revert'); toast('Ruling undone.'); load('fixtures'); }
-      catch (error) { toast(error.message); }
-    };
-  });
 }
-
-async function loadExtensions() {
-  var data = await api('/api/extensions?status=requested');
-  var el = document.getElementById('tab-extensions');
-  el.innerHTML = '<div class="card"><h2>Extension requests</h2>' +
-    (data.extensions.length === 0 ? '<p class="muted">Nothing waiting.</p>' :
-      '<table><thead><tr><th>Match</th><th>Asked by</th><th>Until</th><th>Reason</th><th></th></tr></thead><tbody>' +
-      data.extensions.map(function (e) {
-        return '<tr data-ext="' + e.id + '"><td>' + esc(e.home_team) + ' v ' + esc(e.away_team) + '</td>' +
-          '<td>' + esc(e.coach) + '</td><td>' + day(e.extends_to) + '</td><td class="muted">' + esc(e.reason) + '</td>' +
-          '<td><button class="act grant">Grant</button> <button class="act danger refuse">Refuse</button></td></tr>';
-      }).join('') + '</tbody></table>') + '</div>';
-
-  el.querySelectorAll('.grant, .refuse').forEach(function (button) {
-    button.onclick = async function () {
-      var row = button.closest('tr');
-      try {
-        await post('/api/extensions/' + row.getAttribute('data-ext'), {
-          status: button.classList.contains('grant') ? 'granted' : 'refused'
-        });
-        toast('Done, and announced.');
-        load('extensions');
-      } catch (error) { toast(error.message); }
-    };
-  });
-}
-
-async function loadTable() {
-  var data = await api('/api/standings');
-  var groups = (data.divisions || []).filter(function (g) { return g.table.length; });
-  if (!groups.length) {
-    document.getElementById('tab-table').innerHTML = '<div class="card"><h2>League table</h2><p class="muted">No results yet.</p></div>';
-    return;
-  }
-  document.getElementById('tab-table').innerHTML = groups.map(function (g) {
-    var title = g.division ? esc(divisionTitle(g.division.name)) : 'League table';
-    return '<div class="card"><h2>' + title + '</h2>' +
-      '<table><thead><tr><th>#</th><th>Team</th><th>Coach</th><th>P</th><th>W</th><th>D</th><th>L</th>' +
-      '<th>TD+</th><th>TD\u2212</th><th>Net TD</th><th>Net CAS</th><th>Bonus</th><th>Conc</th><th>Pts</th></tr></thead><tbody>' +
-      g.table.map(function (r) {
-        return '<tr><td>' + r.position + '</td><td>' +
-          esc(teamLabel(r.teamName, r.nameProvisional, r.coach)) + '</td>' +
-          '<td class="muted">' + esc(r.coach) + '</td>' +
-          '<td>' + r.played + '</td><td>' + r.won + '</td><td>' + r.drawn + '</td><td>' + r.lost + '</td>' +
-          '<td>' + r.touchdownsFor + '</td><td>' + r.touchdownsAgainst + '</td>' +
-          '<td>' + signed(r.netTouchdowns) + '</td><td>' + signed(r.netCasualties) + '</td>' +
-          '<td class="muted">' + (r.bonusPoints ? '+' + r.bonusPoints : '') + '</td>' +
-          '<td class="muted">' + (r.concessionsGiven || '') + '</td>' +
-          '<td><strong>' + r.points + '</strong></td></tr>';
-      }).join('') + '</tbody></table>' +
-      '<p class="note">Points include \u00a72.4 bonuses (3+ TDs, no TDs conceded, 3+ casualties). ' +
-      'Ties break on head-to-head, then net TD, then net CAS, then their sum. ' +
-      'Conc counts unplayed games ruled against that team.</p></div>';
-  }).join('');
-}
-
-function signed(value) { return (value > 0 ? '+' : '') + value; }
 
 async function loadCoaches() {
   var data = await api('/api/coaches');
@@ -482,7 +384,7 @@ async function loadCoaches() {
         '<td><input class="mail" value="' + esc(c.email || '') + '" style="width:170px"></td>' +
         '<td><button class="act savecoach">Save</button></td></tr>';
     }).join('') + '</tbody></table>' +
-    '<p class="note">Coaches normally link themselves with <code>/trubbl link</code>. This is for when that goes wrong.</p></div>';
+    '<p class="note">Discord ids were filled in from the sign-up poll. Edit one here if a coach changes account.</p></div>';
 
   el.querySelectorAll('.savecoach').forEach(function (button) {
     button.onclick = async function () {
@@ -500,26 +402,12 @@ async function loadCoaches() {
 
 var SETTING_LABELS = {
   league_name: 'League name',
-  points_win: 'Points for a win', points_draw: 'Points for a draw', points_loss: 'Points for a loss',
-  bonus_touchdown_threshold: 'Bonus point at this many TDs scored (0 = off)',
-  bonus_touchdown_points: 'Points for that TD bonus',
-  bonus_shutout_points: 'Points for conceding no TDs',
-  bonus_casualty_threshold: 'Bonus point at this many casualties (0 = off)',
-  bonus_casualty_points: 'Points for that casualty bonus',
-  concession_score_winner: 'Concession: TDs to the coach who tried',
-  concession_score_loser: 'Concession: TDs to the coach who did not respond',
-  no_agreement_score: 'No agreement reached: TDs to each side',
   round_length_days: 'Window length (days)',
   first_round_length_days: 'First round window length (days)',
   dates_channel_id: 'Discord: season dates channel id',
-  dates_reminder_days: 'Dates channel reminder, days before close',
-  nag_days_before_close: 'Chase on these days before the deadline',
-  closing_soon_days: 'Treat as closing soon within (days)',
-  auto_forfeit_on_close: 'Auto-forfeit when a window expires (true/false)',
   announce_channel_id: 'Discord: announcements channel id',
-  chase_channel_id: 'Discord: chase channel id',
-  admin_channel_id: 'Discord: admin channel id',
-  discord_admin_role_ids: 'Discord: admin role ids (comma separated)'
+  tourplay_feed_channel_id: 'Discord: channel where TourPlay\'s bot posts results',
+  alert_discord_user_id: 'Discord: user id to mention in alarms'
 };
 
 async function loadSettings() {
@@ -531,37 +419,8 @@ async function loadSettings() {
         '<input data-key="' + key + '" value="' + esc(data.settings[key] === undefined ? '' : data.settings[key]) + '"></label>';
     }).join('') +
     '<button class="act primary" id="savesettings">Save settings</button>' +
-    '<p class="note">Auto-forfeit applies \u00a73.2(c) \u2014 a 0-0 draw \u2014 when a window expires with a game unplayed and ' +
-    'no extension granted, because telling (a) from (b) needs to know who actually reached out. Re-rule by hand once you know. ' +
-    'No ruling earns a \u00a72.4 bonus: left to the letter of the rules a 0-0 draw would pay the shutout bonus to both sides, ' +
-    'making it worth more to ignore a fixture than to turn up and lose.</p></div>';
-
-  // Per-division chase channels (§3.3 — each division has its own setup channel).
-  try {
-    var divs = await api('/api/divisions');
-    if (divs.divisions.length) {
-      el.insertAdjacentHTML('beforeend',
-        '<div class="card"><h2>Division chase channels</h2><table><thead><tr><th>Division</th>' +
-        '<th>Chase channel id</th><th></th></tr></thead><tbody>' +
-        divs.divisions.map(function (d) {
-          return '<tr data-div="' + d.id + '"><td>' + esc(d.name) + '</td>' +
-            '<td><input class="chch" value="' + esc(d.chase_channel_id || '') + '" style="width:220px"></td>' +
-            '<td><button class="act savediv">Save</button></td></tr>';
-        }).join('') + '</tbody></table>' +
-        '<p class="note">Where the "still to play" nags for that division are posted. Left blank, they fall back to the ' +
-        'league-wide chase channel above. Inter-divisional friendlies are never chased.</p></div>');
-      el.querySelectorAll('.savediv').forEach(function (button) {
-        button.onclick = async function () {
-          var row = button.closest('tr');
-          try {
-            await post('/api/divisions/' + row.getAttribute('data-div'),
-              { chase_channel_id: row.querySelector('.chch').value });
-            toast('Division channel saved.');
-          } catch (error) { toast(error.message); }
-        };
-      });
-    }
-  } catch (error) { /* divisions not imported yet */ }
+    '<p class="note">The bot reads results from TourPlay\'s own posts and keeps the round calendar. ' +
+    'It no longer chases games, keeps a table or takes rulings: those need data TourPlay\'s feed does not carry.</p></div>';
 
   document.getElementById('savesettings').onclick = async function () {
     var updates = {};

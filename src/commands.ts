@@ -1,21 +1,15 @@
-// The /trubbl slash commands. Everything a coach can do here they can also do
-// in the portal; the point is that they will actually do it in Discord.
+// The /trubbl slash commands.
+//
+// Since 23 Oct 2026 there is one: status. The bot's data comes from
+// TourPlay's own Discord feed, which reports results and agreed dates but not
+// the full draw or exact casualties, so every command that needed those — the
+// table, outstanding, mygame, schedule, extend, forfeit — was retired rather
+// than left to give wrong answers. link went with them: nothing used it.
 
-import { activeSeason, audit, nowIso, settings } from './db.js';
-import { EPHEMERAL, ResponseType, mention, postToChannel } from './discord.js';
-import {
-  coachByDiscord,
-  currentRound,
-  fixtureById,
-  fixtureForCoach,
-  fixturesForRound,
-  outstanding,
-  roundWindow,
-  ruleFixture,
-  standingsFor,
-  type FixtureView,
-} from './league.js';
-import type { Env, RulingKind } from './types.js';
+import { activeSeason } from './db.js';
+import { EPHEMERAL, ResponseType } from './discord.js';
+import { currentRound, fixturesForRound, roundWindow, type FixtureView } from './league.js';
+import type { Env } from './types.js';
 
 interface InteractionOption {
   name: string;
@@ -33,37 +27,18 @@ export interface Interaction {
   channel_id?: string;
 }
 
+/** Subcommands that existed before 23 Oct 2026, so a stale Discord menu gets a straight answer. */
+export const RETIRED_COMMANDS = ['table', 'outstanding', 'mygame', 'link', 'schedule', 'extend', 'forfeit'];
+
+/** How old the last good read of TourPlay's feed can be before the bot says so. */
+const STALE_AFTER_MS = 36 * 60 * 60 * 1000;
+
 function replyJson(content: string, ephemeral = true) {
   return {
     type: ResponseType.Reply,
-    data: { content, flags: ephemeral ? EPHEMERAL : 0, allowed_mentions: { parse: ['users'] } },
+    data: { content, flags: ephemeral ? EPHEMERAL : 0, allowed_mentions: { parse: [] } },
   };
 }
-
-function invoker(interaction: Interaction): { id: string; username: string } {
-  const user = interaction.member?.user ?? interaction.user;
-  return { id: user?.id ?? '', username: user?.username ?? 'unknown' };
-}
-
-function optionMap(options: InteractionOption[] | undefined): Record<string, string> {
-  const map: Record<string, string> = {};
-  for (const option of options ?? []) {
-    if (option.value !== undefined) map[option.name] = String(option.value);
-  }
-  return map;
-}
-
-/** §3.2 outcomes, in the language the rules use. */
-export const RULING_LABELS: Record<RulingKind, string> = {
-  concession: 'concession',
-  no_agreement: 'no agreement reached',
-  no_attempt: 'neither coach attempted',
-  forfeit: 'forfeit',
-  double_forfeit: 'double forfeit',
-  void: 'void',
-};
-
-// ------------------------------------------------------------- formatting ---
 
 function shortDate(iso: string | null): string {
   if (!iso) return 'no date';
@@ -86,38 +61,9 @@ export function divisionTitle(name: string): string {
   return /\bdivisions?$/i.test(name.trim()) ? name.trim() : `${name.trim()} Division`;
 }
 
-/**
- * Until the organiser opens the season, TourPlay gives a two-letter short code
- * instead of a team name, and the codes are not unique — two coaches both
- * registered as "BB". A code tells a reader nothing, so name the coach
- * instead until the real team name arrives.
- */
-function teamLabel(name: string, provisional: boolean, coach: string): string {
-  if (provisional && coach) return coach;
-  return name || coach || 'TBC';
-}
-
-function fixtureLine(fixture: FixtureView, withMentions = false): string {
-  const home = withMentions ? mention(fixture.homeDiscordId, fixture.homeCoach) : fixture.homeCoach;
-  const away = withMentions ? mention(fixture.awayDiscordId, fixture.awayCoach) : fixture.awayCoach;
-  // With no real team name there is nothing to put in front of the coach, so
-  // the line becomes coach v coach rather than "**BB** (@someone)".
-  const side = (team: string, provisional: boolean, who: string) =>
-    provisional || !team ? who : `**${team}** (${who})`;
-  const heading =
-    `${side(fixture.homeTeam, fixture.homeTeamProvisional, home)} v ` +
-    `${side(fixture.awayTeam, fixture.awayTeamProvisional, away)}`;
-
-  if (fixture.rulingKind) {
-    return `${heading} — ${RULING_LABELS[fixture.rulingKind]} ${fixture.homeScore}–${fixture.awayScore}`;
-  }
-  if (fixture.status === 'played') {
-    return `${heading} — ${fixture.homeScore}–${fixture.awayScore}`;
-  }
-  if (fixture.scheduledFor) {
-    return `${heading} — scheduled ${shortDate(fixture.scheduledFor)}`;
-  }
-  return `${heading} — not played`;
+/** One reported result, as the status reply lists it. */
+export function resultLine(fixture: Pick<FixtureView, 'homeTeam' | 'awayTeam' | 'homeScore' | 'awayScore'>): string {
+  return `**${fixture.homeTeam}** ${fixture.homeScore}–${fixture.awayScore} **${fixture.awayTeam}**`;
 }
 
 /** Discord hard-rejects anything over 2000 characters, so trim by whole lines. */
@@ -126,7 +72,7 @@ function clamp(lines: string[], limit = 1900): string {
   let length = 0;
   for (const line of lines) {
     if (length + line.length + 1 > limit) {
-      out.push(`…and ${lines.length - out.length} more — see the portal`);
+      out.push(`…and ${lines.length - out.length} more`);
       break;
     }
     out.push(line);
@@ -135,313 +81,57 @@ function clamp(lines: string[], limit = 1900): string {
   return out.join('\n');
 }
 
-/** Any one of the configured roles is enough. */
-function isAdmin(interaction: Interaction, adminRoleIds: string): boolean {
-  const allowed = adminRoleIds.split(',').map((id) => id.trim()).filter(Boolean);
-  if (allowed.length === 0) return false;
-  const held = interaction.member?.roles ?? [];
-  return allowed.some((id) => held.includes(id));
-}
-
-function parseWhen(raw: string): string | null {
-  const trimmed = raw.trim();
-  // Accept "2026-10-05" and "2026-10-05 19:00", both read as UK local time.
-  const match = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?$/.exec(trimmed);
-  if (!match) return null;
-  const [, y, m, d, hh = '19', mm = '00'] = match;
-  const parsed = new Date(`${y}-${m}-${d}T${hh}:${mm}:00Z`);
-  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString().replace(/\.\d{3}Z$/, 'Z');
-}
-
-// --------------------------------------------------------------- dispatch ---
-
 export async function handleCommand(env: Env, interaction: Interaction): Promise<unknown> {
-  const season = await activeSeason(env);
-  if (!season) return replyJson('No season is active yet. Set one up in the portal first.');
-
   const sub = interaction.data?.options?.[0];
   const name = sub?.name ?? 'status';
-  const options = optionMap(sub?.options);
-  const map = await settings(env);
-  const user = invoker(interaction);
 
-  switch (name) {
-    case 'status':
-      return statusCommand(env, season.id, map['league_name'] ?? 'TRUBBL');
-    case 'table':
-      return tableCommand(env, season.id);
-    case 'outstanding':
-      return outstandingCommand(env, season.id);
-    case 'mygame':
-      return myGameCommand(env, season.id, user.id);
-    case 'link':
-      return linkCommand(env, season.id, user, options['naf'] ?? '', options['name'] ?? '');
-    case 'schedule':
-      return scheduleCommand(env, season.id, user, options['when'] ?? '');
-    case 'extend':
-      return extendCommand(env, season.id, user, options['days'] ?? '', options['reason'] ?? '', map);
-    case 'forfeit':
-      if (!isAdmin(interaction, map['discord_admin_role_ids'] ?? '')) {
-        return replyJson('Only the Lord Commissioner can rule on an unplayed game.');
-      }
-      return forfeitCommand(env, user, options, map);
-    default:
-      return replyJson(`I do not know the subcommand \`${name}\`.`);
+  if (RETIRED_COMMANDS.includes(name)) {
+    return replyJson(
+      `\`/trubbl ${name}\` has been retired. The bot can no longer read TourPlay directly, so it only reports ` +
+        `what TourPlay posts in Discord. Check TourPlay for fixtures and the table.`,
+    );
   }
+  if (name !== 'status') return replyJson(`I do not know the subcommand \`${name}\`.`);
+
+  const season = await activeSeason(env);
+  if (!season) return replyJson('No season is active yet.');
+  return statusCommand(env, season.id, season.last_synced_at, season.last_sync_error);
 }
 
-async function statusCommand(env: Env, seasonId: number, leagueName: string) {
+async function statusCommand(
+  env: Env,
+  seasonId: number,
+  lastRead: string | null,
+  lastError: string | null,
+) {
   const round = await currentRound(env, seasonId);
-  if (!round) return replyJson('That season has no rounds yet — import the fixtures from TourPlay first.');
+  if (!round) return replyJson('That season has no rounds yet.');
 
   const view = await roundWindow(env, round);
   const fixtures = await fixturesForRound(env, round.id);
-  const left = outstanding(fixtures);
+  const reported = fixtures.filter((f) => f.status === 'played' && f.homeScore !== null && f.awayScore !== null);
 
-  const deadline =
+  const window =
     view.effectiveClose === null
       ? 'no deadline set'
       : view.state === 'overdue'
-        ? `**overdue** — closed ${shortDate(view.effectiveClose)}`
-        : `closes ${shortDate(view.effectiveClose)} (${view.daysRemaining} day${view.daysRemaining === 1 ? '' : 's'} left)`;
+        ? `closed ${shortDate(view.effectiveClose)}`
+        : view.state === 'not_open'
+          ? `opens ${shortDate(round.opens_at)}, closes ${shortDate(view.effectiveClose)}`
+          : `closes ${shortDate(view.effectiveClose)} (${view.daysRemaining} day${view.daysRemaining === 1 ? '' : 's'} left)`;
 
-  return replyJson(
-    [
-      `**${leagueName} — Round ${round.number}** (${round.status})`,
-      `Window: ${deadline}`,
-      `Played: ${fixtures.length - left.length} of ${fixtures.length}`,
-      left.length ? `Still to play: ${left.length}` : 'Every game is in. ',
-    ].join('\n'),
-    false,
-  );
-}
-
-async function tableCommand(env: Env, seasonId: number) {
-  const groups = await standingsFor(env, seasonId);
-  const withRows = groups.filter((g) => g.table.length > 0);
-  if (withRows.length === 0) return replyJson('No results yet.');
-
-  const blocks = withRows.map((group) => {
-    const heading = group.division ? `**${divisionTitle(group.division.name)}**` : '**League table**';
-    const lines = group.table.map(
-      (r) =>
-        `${String(r.position).padStart(2)}. ${teamLabel(r.teamName, r.nameProvisional, r.coach)} — **${r.points}** ` +
-        `(${r.won}/${r.drawn}/${r.lost}, TD ${sign(r.netTouchdowns)}, CAS ${sign(r.netCasualties)}` +
-        `${r.bonusPoints ? `, +${r.bonusPoints} bonus` : ''})`,
-    );
-    return `${heading}\n${lines.join('\n')}`;
-  });
-
-  // Say why the names look like that, rather than leaving people to wonder.
-  const anyProvisional = withRows.some((g) => g.table.some((r) => r.nameProvisional));
-  const footer = anyProvisional
-    ? '\n\n_Coaches are listed by name until TourPlay makes the rosters public._'
-    : '';
-  return replyJson(clamp(blocks.join('\n\n').split('\n')) + footer, false);
-}
-
-function sign(value: number): string {
-  return value > 0 ? `+${value}` : String(value);
-}
-
-async function outstandingCommand(env: Env, seasonId: number) {
-  const round = await currentRound(env, seasonId);
-  if (!round) return replyJson('No rounds yet.');
-  const left = outstanding(await fixturesForRound(env, round.id));
-  if (left.length === 0) return replyJson(`Round ${round.number} is complete — nothing outstanding.`, false);
-
-  return replyJson(
-    `**Round ${round.number} — still to play**\n${clamp(left.map((f) => fixtureLine(f, true)))}`,
-    false,
-  );
-}
-
-async function myGameCommand(env: Env, seasonId: number, discordUserId: string) {
-  const coach = await coachByDiscord(env, seasonId, discordUserId);
-  if (!coach) {
-    return replyJson('I do not know who you are yet. Run `/trubbl link naf:<your NAF number>` first.');
-  }
-  const round = await currentRound(env, seasonId);
-  if (!round) return replyJson('No rounds yet.');
-
-  const fixture = await fixtureForCoach(env, round.id, coach.id);
-  if (!fixture) return replyJson(`You have no fixture in round ${round.number}.`);
-
-  const view = await roundWindow(env, round);
-  const deadline = view.effectiveClose ? shortDate(view.effectiveClose) : 'no deadline set';
-  return replyJson([`**Round ${round.number}**`, fixtureLine(fixture, true), `Deadline: ${deadline}`].join('\n'));
-}
-
-async function linkCommand(
-  env: Env,
-  seasonId: number,
-  user: { id: string; username: string },
-  naf: string,
-  name: string,
-) {
-  const nafNumber = Number(naf);
-  const coach = Number.isFinite(nafNumber) && nafNumber > 0
-    ? await env.DB.prepare('SELECT * FROM coach WHERE season_id = ? AND naf_number = ?')
-        .bind(seasonId, nafNumber)
-        .first<{ id: number; display_name: string; discord_user_id: string | null }>()
-    : name
-      ? await env.DB.prepare(
-          'SELECT * FROM coach WHERE season_id = ? AND lower(display_name) = lower(?)',
-        )
-          .bind(seasonId, name.trim())
-          .first<{ id: number; display_name: string; discord_user_id: string | null }>()
-      : null;
-
-  if (!coach) {
-    return replyJson(
-      'I could not find you in this season. Give your NAF number as it appears on TourPlay, ' +
-        'or your TourPlay coach name with `name:`. If you have only just registered, your entry ' +
-        'may still be pending validation.',
-    );
-  }
-  if (coach.discord_user_id && coach.discord_user_id !== user.id) {
-    return replyJson(`${coach.display_name} is already linked to another Discord account. Ask an admin.`);
-  }
-
-  await env.DB.prepare(
-    "UPDATE coach SET discord_user_id = ?, discord_username = ?, linked_at = ? WHERE id = ?",
-  )
-    .bind(user.id, user.username, nowIso(), coach.id)
-    .run();
-  await audit(env, `discord:${user.username}`, 'coach.link', `coach:${coach.id}`);
-
-  return replyJson(`Linked you to **${coach.display_name}**. Try \`/trubbl mygame\`.`);
-}
-
-async function scheduleCommand(
-  env: Env,
-  seasonId: number,
-  user: { id: string; username: string },
-  when: string,
-) {
-  const coach = await coachByDiscord(env, seasonId, user.id);
-  if (!coach) return replyJson('Link your account first with `/trubbl link`.');
-
-  const iso = parseWhen(when);
-  if (!iso) return replyJson('I could not read that date. Use `YYYY-MM-DD` or `YYYY-MM-DD HH:MM`.');
-
-  const round = await currentRound(env, seasonId);
-  if (!round) return replyJson('No rounds yet.');
-  const fixture = await fixtureForCoach(env, round.id, coach.id);
-  if (!fixture) return replyJson(`You have no fixture in round ${round.number}.`);
-  if (fixture.status === 'played' || fixture.rulingKind) {
-    return replyJson('That game is already settled.');
-  }
-
-  await env.DB.prepare(
-    "UPDATE fixture SET scheduled_for = ?, scheduled_by = ?, status = 'scheduled' WHERE id = ?",
-  )
-    .bind(iso, `discord:${user.username}`, fixture.id)
-    .run();
-  await audit(env, `discord:${user.username}`, 'fixture.schedule', `fixture:${fixture.id}`, { when: iso });
-
-  return replyJson(
-    `Noted — **${fixture.homeTeam} v ${fixture.awayTeam}** is down for ${shortDate(iso)}. ` +
-      'This is a note for the league, not a TourPlay booking.',
-  );
-}
-
-async function extendCommand(
-  env: Env,
-  seasonId: number,
-  user: { id: string; username: string },
-  days: string,
-  reason: string,
-  map: Record<string, string>,
-) {
-  const coach = await coachByDiscord(env, seasonId, user.id);
-  if (!coach) return replyJson('Link your account first with `/trubbl link`.');
-
-  const requested = Number(days);
-  if (!Number.isFinite(requested) || requested < 1 || requested > 28) {
-    return replyJson('Ask for between 1 and 28 days.');
-  }
-
-  const round = await currentRound(env, seasonId);
-  if (!round) return replyJson('No rounds yet.');
-  const fixture = await fixtureForCoach(env, round.id, coach.id);
-  if (!fixture) return replyJson(`You have no fixture in round ${round.number}.`);
-
-  const base = fixture.extendedTo ?? round.closes_at;
-  if (!base) return replyJson('That round has no deadline set, so there is nothing to extend.');
-
-  const extendsTo = new Date(Date.parse(base) + requested * 86_400_000)
-    .toISOString()
-    .replace(/\.\d{3}Z$/, 'Z');
-
-  await env.DB.prepare(
-    `INSERT INTO extension (fixture_id, extends_to, reason, requested_by_coach_id, status)
-       VALUES (?, ?, ?, ?, 'requested')`,
-  )
-    .bind(fixture.id, extendsTo, reason, coach.id)
-    .run();
-  await audit(env, `discord:${user.username}`, 'extension.request', `fixture:${fixture.id}`, {
-    days: requested,
-    reason,
-  });
-
-  const adminChannel = map['admin_channel_id'] ?? '';
-  if (adminChannel) {
-    await postToChannel(
-      env,
-      adminChannel,
-      `**Extension requested** — Round ${round.number}: ${fixture.homeTeam} v ${fixture.awayTeam}\n` +
-        `${mention(user.id, coach.display_name)} asks for ${requested} day(s) to ${shortDate(extendsTo)}.\n` +
-        `Reason: ${reason || '_none given_'}\nApprove or refuse it in the portal.`,
-    );
-  }
-  return replyJson(`Asked for ${requested} day(s), to ${shortDate(extendsTo)}. An admin has to approve it.`);
-}
-
-async function forfeitCommand(
-  env: Env,
-  user: { id: string; username: string },
-  options: Record<string, string>,
-  map: Record<string, string>,
-) {
-  const fixtureId = Number(options['match']);
-  if (!Number.isFinite(fixtureId)) return replyJson('Give the fixture id — you can see it in the portal.');
-
-  const outcome = (options['outcome'] ?? '').toLowerCase();
-  const side = (options['side'] ?? '').toLowerCase();
-
-  // §3.2: which of the three outcomes applies, and who (if anyone) is at fault.
-  let kind: RulingKind;
-  let atFault: 'home' | 'away' | 'both' | null;
-  if (outcome === 'no_agreement') {
-    kind = 'no_agreement';
-    atFault = null;
-  } else if (outcome === 'no_attempt') {
-    kind = 'no_attempt';
-    atFault = null;
-  } else if (outcome === 'concession') {
-    if (!['home', 'away'].includes(side)) {
-      return replyJson('A concession needs `side` set to whichever coach did not respond.');
-    }
-    kind = 'concession';
-    atFault = side as 'home' | 'away';
+  const lines = [`**Round ${round.number}** — ${window}`];
+  if (reported.length === 0) {
+    lines.push('No results reported on TourPlay yet this round.');
   } else {
-    return replyJson('`outcome` must be concession, no_agreement or no_attempt.');
+    lines.push(`Results reported on TourPlay (${reported.length}):`);
+    lines.push(...reported.map(resultLine));
   }
 
-  const fixture = await fixtureById(env, fixtureId);
-  if (!fixture) return replyJson(`No fixture ${fixtureId}.`);
-
-  const ruled = await ruleFixture(env, fixtureId, kind, atFault, options['reason'] ?? '', `discord:${user.username}`);
-
-  const announceChannel = map['announce_channel_id'] ?? '';
-  if (announceChannel) {
-    await postToChannel(
-      env,
-      announceChannel,
-      `**Ruling — Round ${ruled.roundNumber}**\n${fixtureLine(ruled, true)}` +
-        (ruled.rulingReason ? `\nReason: ${ruled.rulingReason}` : ''),
-    );
+  // Say plainly when the bot's knowledge is old, rather than presenting it as current.
+  const stale = !lastRead || Date.now() - Date.parse(lastRead) > STALE_AFTER_MS;
+  if (stale || lastError) {
+    lines.push('', `_Last read TourPlay's feed ${lastRead ? shortDate(lastRead) : 'never'} — this may be out of date._`);
   }
-  return replyJson(`Ruled: ${fixtureLine(ruled)}`);
+  return replyJson(clamp(lines), false);
 }
